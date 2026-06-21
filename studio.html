@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>DualSense Studio</title>
+  <link rel="stylesheet" href="css/style.css" />
+  <!-- No web fonts / CDN: fully offline, zero network calls. Uses the system font stack. -->
+  <style>
+    .tabs { display: flex; gap: 8px; margin: 0 auto 20px; max-width: 1100px; padding: 0 28px; }
+    .tab { padding: 10px 20px; border-radius: 11px; border: 1px solid var(--card-line); background: rgba(255,255,255,0.04); cursor: pointer; font-weight: 600; font-size: 14px; color: var(--muted); }
+    .tab.active { color: #fff; background: linear-gradient(135deg, var(--ps), var(--accent)); border-color: transparent; }
+    .studio { max-width: 1100px; margin: 0 auto; padding: 0 28px 30px; }
+    .panel { display: none; }
+    .panel.active { display: block; }
+    .row { display: flex; gap: 20px; flex-wrap: wrap; }
+    .mini-sticks { display: flex; gap: 16px; }
+    .mini-sticks canvas { width: 150px; height: 150px; border-radius: 14px; background: radial-gradient(circle at center, #0c1322, #0a0f1b 70%); border: 1px solid var(--card-line); }
+    .trig-bars { display: flex; flex-direction: column; gap: 10px; justify-content: center; flex: 1; min-width: 180px; }
+    .tb { display: flex; align-items: center; gap: 10px; }
+    .tb label { width: 28px; font-weight: 700; font-size: 12px; color: var(--muted); }
+    .tb .bar { flex: 1; height: 10px; border-radius: 6px; background: rgba(255,255,255,0.06); overflow: hidden; }
+    .tb .bar i { display: block; height: 100%; width: 0; background: linear-gradient(90deg, var(--accent), #a07bff); }
+    .preset-row { display: flex; gap: 10px; flex-wrap: wrap; margin: 4px 0 18px; }
+    .preset { padding: 14px 18px; border-radius: 12px; border: 1px solid var(--card-line); background: rgba(255,255,255,0.04); cursor: pointer; font-weight: 700; min-width: 90px; text-align: center; }
+    .preset.active { border-color: var(--accent); color: #c9b8ff; background: rgba(124,92,255,0.12); }
+    .preset small { display: block; font-weight: 500; font-size: 11px; color: var(--muted); margin-top: 3px; }
+    .ctl { display: flex; flex-direction: column; gap: 6px; margin: 14px 0; }
+    .ctl label { font-size: 13px; color: var(--muted); display: flex; justify-content: space-between; }
+    .ctl input[type=range] { width: 100%; accent-color: var(--accent); }
+    .seg { display: inline-flex; border: 1px solid var(--card-line); border-radius: 10px; overflow: hidden; }
+    .seg button { padding: 8px 16px; background: transparent; border: none; color: var(--muted); cursor: pointer; font: inherit; font-weight: 600; }
+    .seg button.active { background: var(--ps); color: #fff; }
+    .swatches { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 12px; }
+    .swatch { width: 40px; height: 40px; border-radius: 10px; cursor: pointer; border: 2px solid rgba(255,255,255,0.15); }
+    .toggle { display: flex; align-items: center; gap: 10px; margin-top: 18px; font-size: 14px; color: var(--muted); }
+    .note { font-size: 12.5px; color: var(--muted); line-height: 1.6; margin-top: 14px; }
+    .note b { color: var(--text); }
+  </style>
+</head>
+<body>
+  <div class="bg-glow"></div>
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-mark"><svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2Zm-5 9h4V7h2v4h4v2h-4v4h-2v-4H7Z"/></svg></div>
+      <div class="brand-text"><h1>DualSense&nbsp;Studio</h1><span>triggers · lightbar · drift — all local</span></div>
+    </div>
+    <div class="conn">
+      <span id="statusPill" class="pill pill-idle"><span class="dot"></span><span id="statusText">No controller</span></span>
+      <span id="modeBadge" class="mode-badge">—</span>
+      <button id="connectBtn" class="btn btn-primary">Connect controller</button>
+    </div>
+  </header>
+
+  <div class="tabs">
+    <button class="tab active" data-tab="triggers">Triggers</button>
+    <button class="tab" data-tab="lightbar">Lightbar</button>
+    <button class="tab" data-tab="monitor">Live / Drift</button>
+  </div>
+
+  <div class="studio">
+    <!-- TRIGGERS -->
+    <section class="panel active card" data-panel="triggers">
+      <div class="card-head"><h2>Adaptive triggers</h2></div>
+      <div class="preset-row" id="presetRow">
+        <div class="preset" data-preset="off">Off<small>release</small></div>
+        <div class="preset" data-preset="light">Light<small>soft wall</small></div>
+        <div class="preset active" data-preset="firm">Firm<small>early wall</small></div>
+        <div class="preset" data-preset="max">Max<small>hard, ~10%</small></div>
+        <div class="preset" data-preset="weapon">Weapon<small>resist + click</small></div>
+      </div>
+
+      <div class="row">
+        <div style="flex:1; min-width:280px;">
+          <div class="ctl">
+            <label>Apply to</label>
+            <div class="seg" id="targetSeg">
+              <button class="active" data-target="both">Both</button>
+              <button data-target="left">L2</button>
+              <button data-target="right">R2</button>
+            </div>
+          </div>
+          <div class="ctl">
+            <label>Effect</label>
+            <div class="seg" id="modeSeg">
+              <button class="active" data-mode="feedback">Wall (resistance)</button>
+              <button data-mode="weapon">Weapon (click)</button>
+            </div>
+          </div>
+          <div class="ctl" data-for="feedback">
+            <label>Wall position <span id="posVal">2</span> <span style="color:var(--muted)">(0=early/short, 9=deep)</span></label>
+            <input type="range" id="pos" min="0" max="9" value="2" />
+          </div>
+          <div class="ctl" data-for="weapon" style="display:none">
+            <label>Click start <span id="startVal">3</span></label>
+            <input type="range" id="start" min="2" max="7" value="3" />
+            <label>Click end <span id="endVal">5</span></label>
+            <input type="range" id="end" min="3" max="8" value="5" />
+          </div>
+          <div class="ctl">
+            <label>Strength <span id="strVal">6</span></label>
+            <input type="range" id="str" min="1" max="8" value="6" />
+          </div>
+          <label class="toggle"><input type="checkbox" id="autoApply" /> Auto-apply this on connect (PC always-on)</label>
+        </div>
+
+        <div style="flex:1; min-width:240px;">
+          <div class="mini-sticks">
+            <canvas id="leftStick" width="300" height="300"></canvas>
+            <canvas id="rightStick" width="300" height="300"></canvas>
+          </div>
+          <div class="trig-bars" style="margin-top:14px;">
+            <div class="tb"><label>L2</label><div class="bar"><i id="l2bar"></i></div></div>
+            <div class="tb"><label>R2</label><div class="bar"><i id="r2bar"></i></div></div>
+          </div>
+          <p class="note">Squeeze L2/R2 to feel it. <b>Works over Bluetooth or USB.</b> Effects are live actuator state — they hold until a game changes them or the controller power-cycles. On <b>PS5</b> the game overrides them; for a permanent PS5 short-pull you need a hardware trigger-stop.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- LIGHTBAR -->
+    <section class="panel card" data-panel="lightbar">
+      <div class="card-head"><h2>Lightbar</h2></div>
+      <input type="color" id="ledColor" value="#2e6be6" style="width:80px;height:48px;background:none;border:none;cursor:pointer;" />
+      <div class="swatches" id="swatches"></div>
+      <p class="note">Sets the controller's light bar color live (USB or Bluetooth).</p>
+    </section>
+
+    <!-- MONITOR / DRIFT -->
+    <section class="panel card" data-panel="monitor">
+      <div class="card-head"><h2>Live & drift</h2></div>
+      <div class="mini-sticks">
+        <canvas id="leftStick2" width="300" height="300"></canvas>
+        <canvas id="rightStick2" width="300" height="300"></canvas>
+      </div>
+      <div id="restResult" class="note"></div>
+      <div style="margin-top:16px; display:flex; gap:10px; flex-wrap:wrap;">
+        <button id="restTestBtn" class="btn btn-ghost" disabled>Quick rest test (3s)</button>
+        <button id="recalibBtn" class="btn btn-danger" disabled title="Rewrites stick center to the controller's memory (USB only)">⚙ Recalibrate center (USB)</button>
+        <a class="btn btn-ghost" href="index.html">Full diagnostic + range calibration →</a>
+      </div>
+      <div id="calibStatus" class="note"></div>
+      <p class="note">Recalibrate re-zeros the stick center into the controller’s own memory (permanent, system-wide, works on PS5). <b>USB only</b> — Bluetooth can’t carry the calibration reports. The deep diagnostic + range calibration lives in the full page.</p>
+    </section>
+  </div>
+
+  <footer class="foot">DualSense Studio · everything runs locally · Chrome/Edge (WebHID)</footer>
+  <script type="module" src="js/studio.js"></script>
+</body>
+</html>

@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>DualSense Doctor — PS5 Stick Drift Diagnostic & Fix</title>
+  <link rel="stylesheet" href="css/style.css" />
+  <!-- No web fonts / CDN: fully offline, zero network calls. Uses the system font stack. -->
+</head>
+<body>
+  <div class="bg-glow"></div>
+
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2Zm-1 5h2v4h4v2h-4v4h-2v-4H7v-2h4Z"/></svg>
+      </div>
+      <div class="brand-text">
+        <h1>DualSense&nbsp;Doctor</h1>
+        <span>PS5 stick-drift diagnostic &amp; recalibration</span>
+      </div>
+    </div>
+
+    <div class="conn">
+      <span id="statusPill" class="pill pill-idle">
+        <span class="dot"></span><span id="statusText">No controller</span>
+      </span>
+      <button id="connectBtn" class="btn btn-primary">Connect controller</button>
+    </div>
+  </header>
+
+  <main id="app" class="layout disabled">
+
+    <!-- LEFT: live sticks -->
+    <section class="card sticks-card">
+      <div class="card-head">
+        <h2>Live input</h2>
+        <span id="modeBadge" class="mode-badge">—</span>
+      </div>
+      <div class="sticks">
+        <div class="stick-block">
+          <canvas id="leftStick" width="320" height="320"></canvas>
+          <div class="stick-meta">
+            <span class="stick-name">LEFT STICK</span>
+            <div class="readout" id="leftReadout">
+              <span>raw <b data-k="raw">128, 128</b></span>
+              <span>norm <b data-k="norm">0.00, 0.00</b></span>
+              <span>offset <b data-k="off">0.0</b></span>
+            </div>
+          </div>
+        </div>
+        <div class="stick-block">
+          <canvas id="rightStick" width="320" height="320"></canvas>
+          <div class="stick-meta">
+            <span class="stick-name">RIGHT STICK</span>
+            <div class="readout" id="rightReadout">
+              <span>raw <b data-k="raw">128, 128</b></span>
+              <span>norm <b data-k="norm">0.00, 0.00</b></span>
+              <span>offset <b data-k="off">0.0</b></span>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="triggers">
+        <div class="trig"><label>L2</label><div class="bar"><i id="l2bar"></i></div></div>
+        <div class="trig"><label>R2</label><div class="bar"><i id="r2bar"></i></div></div>
+      </div>
+    </section>
+
+    <!-- CENTER: score + verdict -->
+    <section class="card score-card">
+      <div class="card-head"><h2>Drift score</h2></div>
+      <div class="gauge">
+        <svg viewBox="0 0 200 200">
+          <circle class="gauge-track" cx="100" cy="100" r="84" />
+          <circle id="gaugeArc" class="gauge-arc" cx="100" cy="100" r="84" />
+        </svg>
+        <div class="gauge-center">
+          <span id="scoreVal">--</span>
+          <small>/ 100</small>
+        </div>
+      </div>
+      <div id="verdict" class="verdict verdict-unknown">Run a diagnostic to score your sticks</div>
+      <div id="verdictDetail" class="verdict-detail"></div>
+    </section>
+
+    <!-- RIGHT: test wizard -->
+    <section class="card wizard-card">
+      <div class="card-head"><h2>Diagnostic</h2></div>
+      <button id="fullDiagBtn" class="btn btn-accent btn-block">▶ Run full diagnostic</button>
+      <div class="step-grid">
+        <button class="btn btn-ghost step-btn" data-test="rest">Rest test</button>
+        <button class="btn btn-ghost step-btn" data-test="range">Range test</button>
+        <button class="btn btn-ghost step-btn" data-test="snapback">Snapback</button>
+      </div>
+      <div id="wizard" class="wizard">
+        <div class="wizard-instruction" id="wizInstruction">Press “Run full diagnostic” and follow the prompts.</div>
+        <div class="wizard-progress"><i id="wizBar"></i></div>
+        <div class="wizard-count" id="wizCount"></div>
+      </div>
+    </section>
+
+    <!-- BOTTOM: report -->
+    <section class="card report-card">
+      <div class="card-head">
+        <h2>Report</h2>
+        <div class="report-actions">
+          <button id="exportBtn" class="btn btn-ghost" disabled>Export JSON</button>
+        </div>
+      </div>
+      <div class="report-grid">
+        <table class="metrics" id="metricsTable">
+          <thead><tr><th>Metric</th><th>Left</th><th>Right</th><th>Verdict</th></tr></thead>
+          <tbody id="metricsBody">
+            <tr class="empty"><td colspan="4">No data yet — run a diagnostic.</td></tr>
+          </tbody>
+        </table>
+
+        <div class="fix-panel">
+          <h3>Recommended fixes</h3>
+          <div id="fixList" class="fix-list">
+            <p class="muted">Fixes appear here after a diagnostic.</p>
+          </div>
+          <div class="fix-actions">
+            <button id="recenterBtn" class="btn btn-ghost" disabled>Capture true center</button>
+            <button id="deadzoneBtn" class="btn btn-ghost" disabled>Copy deadzone profile</button>
+            <button id="writeCalibBtn" class="btn btn-danger" disabled title="Writes calibration to the controller's memory">⚠ Recalibrate controller</button>
+          </div>
+          <p class="fix-note" id="fixNote"></p>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <div id="overlay" class="overlay hidden">
+    <div class="overlay-card">
+      <h2 id="ovTitle">Heads up</h2>
+      <p id="ovBody"></p>
+      <div class="overlay-actions">
+        <button id="ovCancel" class="btn btn-ghost">Cancel</button>
+        <button id="ovConfirm" class="btn btn-danger">Proceed</button>
+      </div>
+    </div>
+  </div>
+
+  <footer class="foot">
+    <span>Works in Chrome / Edge (WebHID). USB or Bluetooth. Your controller never leaves this machine — everything runs locally.</span>
+  </footer>
+
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>

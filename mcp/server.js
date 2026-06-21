@@ -1,0 +1,120 @@
+#!/usr/bin/env node
+// server.js — DualSense Doctor MCP server (stdio). Lets a Claude Code session read &
+// control a PS5 DualSense over HID. Local-only: no network, stdio transport.
+//
+// SAFETY: the brick-risk NVS recalibration tool is NOT registered unless the human sets
+// DUALSENSE_MCP_ALLOW_CALIBRATION=1, and even then it requires an explicit confirm token,
+// is USB-only, and waits for the sticks to be at rest. Every other tool is read-only or
+// reversible (trigger/lightbar effects reset on power-cycle). All inputs are validated/clamped.
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { z } from 'zod';
+import {
+  listControllers, Controller, diagnoseFromFrames,
+  TRIGGER_PRESETS, effFeedback, effWeapon, effOff,
+} from './hid/dualsense.js';
+
+const ALLOW_CALIB = process.env.DUALSENSE_MCP_ALLOW_CALIBRATION === '1';
+
+const server = new McpServer({ name: 'dualsense-doctor', version: '1.0.0' });
+
+// open a fresh handle per call (node-hid handles are blocking) and always close it.
+function withController(path, fn) {
+  const c = new Controller(path || undefined);
+  try { c.open(); return fn(c); }
+  finally { c.close(); }
+}
+const ok = (obj) => ({ content: [{ type: 'text', text: JSON.stringify(obj, null, 2) }] });
+const PATH = { path: z.string().optional().describe('Specific controller path from list_controllers; omit to use the first found') };
+
+// ---------------- read-only / safe tools ----------------
+server.registerTool('list_controllers',
+  { title: 'List controllers', description: 'List connected DualSense controllers (path, transport, model).', inputSchema: {} },
+  async () => ok({ controllers: listControllers() }));
+
+server.registerTool('get_status',
+  { title: 'Get controller status', description: 'Connection mode, live stick positions, battery, and firmware for a DualSense.', inputSchema: { ...PATH } },
+  async ({ path }) => withController(path, (c) => {
+    const sticks = c.readSticksOnce(800);
+    if (!sticks) return ok({ connected: true, mode: c.mode, note: 'No input reports — on macOS grant Input Monitoring or press the PS button; Bluetooth is not reachable on macOS (use USB).' });
+    return ok({ connected: true, mode: sticks.mode, sticks, battery: c.getBattery(600), firmware: c.readFirmware(), isEdge: c.isEdge });
+  }));
+
+server.registerTool('diagnose_drift',
+  { title: 'Diagnose stick drift', description: 'Sample the sticks at rest and report per-stick center offset, jitter, score (0-100), verdict, and recommended deadzone. Ask the user to NOT touch the sticks during the sample.', inputSchema: { seconds: z.number().min(0.5).max(10).default(3).describe('rest-sample duration (s)'), ...PATH } },
+  async ({ seconds, path }) => withController(path, (c) => {
+    const s = c.sampleSticks(Math.round((seconds ?? 3) * 1000));
+    if (!s.n) return ok({ error: 'No input received. On macOS grant Input Monitoring / use USB; press the PS button.' });
+    return ok(diagnoseFromFrames(s.frames, { mode: s.mode, seconds }));
+  }));
+
+server.registerTool('read_sticks',
+  { title: 'Read sticks once', description: 'One immediate stick reading (raw 0-255 and normalized -1..1) plus trigger pressures.', inputSchema: { ...PATH } },
+  async ({ path }) => withController(path, (c) => ok(c.readSticksOnce(800) || { error: 'no input report' })));
+
+server.registerTool('get_battery',
+  { title: 'Get battery', description: 'Battery level (0-100%) and charging status.', inputSchema: { ...PATH } },
+  async ({ path }) => withController(path, (c) => ok(c.getBattery(800) || { error: 'no input report' })));
+
+// ---------------- reversible (ephemeral) control tools ----------------
+server.registerTool('set_trigger_effect',
+  {
+    title: 'Set adaptive trigger effect',
+    description: 'Set the L2/R2 adaptive-trigger resistance. Ephemeral (resets on power-cycle; a PS5 game overrides it). Use a preset, or mode=feedback (a resistance wall from `position`) / mode=weapon (resist then click between start..end).',
+    inputSchema: {
+      preset: z.enum(['off', 'light', 'firm', 'max', 'weapon']).optional().describe('quick preset; overrides mode/params'),
+      mode: z.enum(['feedback', 'weapon']).optional(),
+      target: z.enum(['both', 'left', 'right']).default('both'),
+      position: z.number().int().min(0).max(9).optional().describe('feedback wall start (0=early/short pull, 9=deep)'),
+      strength: z.number().int().min(1).max(8).optional(),
+      start: z.number().int().min(2).max(7).optional().describe('weapon click start'),
+      end: z.number().int().min(3).max(8).optional().describe('weapon click end'),
+      ...PATH,
+    },
+  },
+  async ({ preset, mode, target = 'both', position, strength, start, end, path }) => withController(path, (c) => {
+    let eff;
+    if (preset) eff = TRIGGER_PRESETS[preset]();
+    else if (mode === 'weapon') eff = effWeapon(start ?? 3, end ?? 5, strength ?? 8);
+    else eff = effFeedback(position ?? 2, strength ?? 6);
+    const l = (target === 'both' || target === 'left') ? eff : effOff();
+    const r = (target === 'both' || target === 'right') ? eff : effOff();
+    c.applyTriggers(l, r);
+    return ok({ applied: true, preset: preset || mode || 'feedback', target, mode: c.mode, note: 'Ephemeral — resets on power-cycle; PS5 games override it.' });
+  }));
+
+server.registerTool('set_lightbar',
+  { title: 'Set lightbar color', description: 'Set the DualSense light bar RGB color (0-255 each). Ephemeral.', inputSchema: { r: z.number().int().min(0).max(255), g: z.number().int().min(0).max(255), b: z.number().int().min(0).max(255), ...PATH } },
+  async ({ r, g, b, path }) => withController(path, (c) => { c.applyLightbar(r, g, b); return ok({ applied: true, color: { r, g, b } }); }));
+
+// ---------------- GATED dangerous tool (NVS write — brick risk) ----------------
+if (ALLOW_CALIB) {
+  server.registerTool('recalibrate_center',
+    {
+      title: 'Recalibrate stick center (writes to controller memory)',
+      description: 'DANGER: rewrites stick center into the controller NVS flash (permanent, USB-only). Brick risk. Requires confirm="RECALIBRATE". Tell the user to let go of both sticks first; it waits for rest and refuses if touched.',
+      inputSchema: { confirm: z.literal('RECALIBRATE').describe('must be exactly "RECALIBRATE"'), ...PATH },
+    },
+    async ({ confirm, path }) => {
+      if (confirm !== 'RECALIBRATE') return ok({ error: 'confirm must equal "RECALIBRATE"' });
+      const steps = [];
+      try {
+        const res = await withController(path, (c) => c.recalibrate({ centerOnly: true, onStep: (m) => steps.push(m) }));
+        return ok({ ...res, steps });
+      } catch (e) { return ok({ error: e.message, steps }); }
+    });
+}
+
+// ---------------- resource: live status ----------------
+server.registerResource('status', 'dualsense://status',
+  { title: 'DualSense status', description: 'Live status of the first connected DualSense.', mimeType: 'application/json' },
+  async (uri) => {
+    let body;
+    try { body = withController(null, (c) => ({ mode: c.mode, sticks: c.readSticksOnce(800), battery: c.getBattery(600), firmware: c.readFirmware() })); }
+    catch (e) { body = { error: e.message }; }
+    return { contents: [{ uri: uri.href, mimeType: 'application/json', text: JSON.stringify(body, null, 2) }] };
+  });
+
+const transport = new StdioServerTransport();
+await server.connect(transport);
+console.error(`dualsense-doctor MCP ready. Calibration tool ${ALLOW_CALIB ? 'ENABLED' : 'disabled (set DUALSENSE_MCP_ALLOW_CALIBRATION=1 to enable)'}.`);

@@ -1,0 +1,22 @@
+{
+  "name": "dualsense-doctor-mcp",
+  "version": "1.0.0",
+  "description": "Local-first MCP server to read and control a PS5 DualSense over HID (drift diagnosis, adaptive triggers, lightbar, optional gated NVS recalibration).",
+  "type": "module",
+  "license": "MIT",
+  "bin": {
+    "dualsense-doctor-mcp": "./server.js"
+  },
+  "main": "server.js",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.29.0",
+    "node-hid": "3.3.0",
+    "zod": "3.25.76"
+  }
+}

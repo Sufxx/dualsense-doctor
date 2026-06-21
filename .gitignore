@@ -1,0 +1,27 @@
+# OS
+.DS_Store
+Thumbs.db
+
+# tooling / local
+.claude-flow/
+.claude/
+*.log
+/tmp/
+
+# screenshots / scratch
+*.png
+!docs/**/*.png
+
+# python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# node (mcp server)
+node_modules/
+npm-debug.log*
+.env
+.env.local
+.env.*.local
+# keep .env.example committed (it documents config, no secrets)
