@@ -68,3 +68,34 @@ The repository also includes the generic
 [dualsense-tuneup skill](../.agents/skills/dualsense-tuneup/SKILL.md). Agents that
 discover project skills can use it directly; others can copy it into their normal
 skill directory. It contains no machine paths, owner profile, or thread arrangement.
+
+
+## Directional tuning evidence
+
+`session_report` also returns a read-only `tuning` assessment for one complete check.
+It separates signed quiet X/Y means, variation between quiet windows, and observed
+left/right/up/down axis reach. All valid quiet windows in the recorded calibration
+epoch are retained; favorable returns do not replace earlier observations. This
+single-check detail does not replace `compare_sessions` across compatible rounds.
+
+Quiet percentages use `(raw - 128) / 127 * 100`: +X points right and +Y down.
+The report retains the minimum/maximum window means, the full peak-to-peak axis
+spread and the largest within-window standard deviation. Spread is not a radial
+deadzone. Old captures lacking signed axes keep this detail unavailable.
+
+Axis reach maps negative travel over 128 raw counts and positive travel over 127,
+so both electrical endpoints are 100%. Opposing differences are percentage points.
+A complete reach assessment needs all 48 measured angular sectors, valid raw axis
+limits and compatible cardinal-sector bounds. These extrema come from rim circles;
+they are not deliberate straight-direction holds or proof of physical travel,
+unsaturated output, or ideal circularity. The existing circularity metric remains
+separate. Raw quiet mean/extrema/deviation combinations are checked for consistency
+while allowing the analyzer's rounding.
+
+`nextStep` uses fixed evidence rules: finish an invalid check, collect missing axis
+detail, repeat incomplete rim coverage, or check whether an observed directional
+resting offset repeats after release. Mixed positions do not force repeated tests.
+Even a one-count offset may be quantization; the report does not prescribe a firmware
+adjustment or an automatic calibration. A normal completed assessment asks the user
+to compare observations with in-game behavior. No hardware-health or zero-drift claim
+is made, and no controller command is sent by this assessment.

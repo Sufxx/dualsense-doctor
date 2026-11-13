@@ -68,3 +68,13 @@ Session logs, device identities, generated capability-bearing HTML, and runtime
 files stay private. Share only selected generic code or synthetic examples when
 reporting a bug. Repository users can consult `mcp/COACHING.md`; the optional adapter
 has additional notes in `mcp/T3-INTEGRATION.md` when that layer is installed.
+
+
+Use `session_report.tuning` for direction-specific follow-up: signed resting X/Y,
+quiet spread and observed axis reach answer different questions. This describes
+one complete check; retain the separate conservative repeated-round comparison.
+Missing old axis data stays unavailable. If a directional resting offset appears,
+check whether it repeats after releases before proposing a separate supported
+adjustment. Fixed `nextStep` guidance never authorizes firmware writes. Raw endpoints
+can saturate, and circle extrema do not prove straight-direction holds or ideal
+range. Refer to `mcp/COACHING.md` for the distinct normalizations and evidence limits.
