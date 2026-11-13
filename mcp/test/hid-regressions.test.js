@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import HID from 'node-hid';
 import { Controller, parseSticks } from '../hid/dualsense.js';
+import { withController } from '../hid/controller-session.js';
 
 function report(id, length) {
   const data = Array(length).fill(0); data[0] = id;
@@ -37,6 +38,19 @@ test('missing explicit path fails before trying to open a different device', () 
   const original = HID.devices;
   try { HID.devices = () => []; assert.throws(() => new Controller('synthetic-missing').open(), /no longer connected/); }
   finally { HID.devices = original; }
+});
+test('async callbacks retain their handle through resolution and rejection', async () => {
+  for (const fail of [false, true]) {
+    let closed = false;
+    const factory = () => ({ open() {}, close() { closed = true; } });
+    const work = withController(undefined, async () => {
+      await Promise.resolve(); assert.equal(closed, false);
+      if (fail) throw Error('synthetic callback failure'); return 42;
+    }, factory);
+    if (fail) await assert.rejects(work, /synthetic callback failure/);
+    else assert.equal(await work, 42);
+    assert.equal(closed, true);
+  }
 });
 test('USB and full Bluetooth reports use the same logical button masks', () => {
   const usb = report(1, 64), bt = report(0x31, 78);

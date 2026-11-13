@@ -9,6 +9,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
+import { withController } from './hid/controller-session.js';
 import {
   listControllers, Controller, diagnoseFromFrames,
   TRIGGER_PRESETS, effFeedback, effWeapon, effOff,
@@ -19,11 +20,6 @@ const ALLOW_CALIB = process.env.DUALSENSE_MCP_ALLOW_CALIBRATION === '1';
 const server = new McpServer({ name: 'dualsense-doctor', version: '1.0.0' });
 
 // open a fresh handle per call (node-hid handles are blocking) and always close it.
-function withController(path, fn) {
-  const c = new Controller(path || undefined);
-  try { c.open(); return fn(c); }
-  finally { c.close(); }
-}
 const ok = (obj) => ({ content: [{ type: 'text', text: JSON.stringify(obj, null, 2) }] });
 const PATH = { path: z.string().optional().describe('Specific controller path from list_controllers; omit to use the first found') };
 
@@ -110,7 +106,7 @@ server.registerResource('status', 'dualsense://status',
   { title: 'DualSense status', description: 'Live status of the first connected DualSense.', mimeType: 'application/json' },
   async (uri) => {
     let body;
-    try { body = withController(null, (c) => ({ mode: c.mode, sticks: c.readSticksOnce(800), battery: c.getBattery(600), firmware: c.readFirmware() })); }
+    try { body = await withController(null, (c) => ({ sticks: c.readSticksOnce(800), mode: c.mode, battery: c.getBattery(600), firmware: c.readFirmware() })); }
     catch (e) { body = { error: e.message }; }
     return { contents: [{ uri: uri.href, mimeType: 'application/json', text: JSON.stringify(body, null, 2) }] };
   });
