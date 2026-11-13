@@ -90,8 +90,8 @@ function buildCommon({ rEff = null, lEff = null, led = null } = {}) {
   let f0 = 0, f1 = 0, f2 = 0;
   if (rEff) { for (let i = 0; i < 11; i++) c[10 + i] = rEff[i] & 0xff; f0 |= 0x04; }
   if (lEff) { for (let i = 0; i < 11; i++) c[21 + i] = lEff[i] & 0xff; f0 |= 0x08; }
-  if (led) { f1 |= 0x04; f2 |= 0x02; c[44] = clamp(led[0] | 0, 0, 255); c[45] = clamp(led[1] | 0, 0, 255); c[46] = clamp(led[2] | 0, 0, 255); }
-  c[0] = f0; c[1] = f1; c[39] = f2;
+  if (led) { f1 |= 0x04; c[44] = clamp(led[0] | 0, 0, 255); c[45] = clamp(led[1] | 0, 0, 255); c[46] = clamp(led[2] | 0, 0, 255); }
+  c[0] = f0; c[1] = f1; c[38] = f2;
   return c;
 }
 
@@ -151,7 +151,7 @@ export class Controller {
     try { this.dev = new HID.HID(this.info.path); }
     catch (e) { throw new Error(`Could not open controller: ${e.message}. On Linux add a hidraw udev rule; on macOS grant Input Monitoring.`); }
   }
-  close() { try { this.dev?.close(); } catch {} this.dev = null; }
+  close() { try { this.dev?.close(); } catch {} this.dev = null;this._lightbarReady=false;this._mode=null; }
 
   _readOnce(timeoutMs = 400) {
     const buf = this.dev.readTimeout(timeoutMs);
@@ -227,7 +227,12 @@ export class Controller {
     this.dev.write([...packet, crc & 0xff, (crc >>> 8) & 0xff, (crc >>> 16) & 0xff, (crc >>> 24) & 0xff]);
   }
   applyTriggers(lEff, rEff) { this._sendOutput(buildCommon({ lEff, rEff })); }
-  applyLightbar(r, g, b) { this._sendOutput(buildCommon({ led: [clamp(r | 0, 0, 255), clamp(g | 0, 0, 255), clamp(b | 0, 0, 255)] })); }
+  applyLightbar(r, g, b) {
+    // Sony initialization uses common bytes 38 (flag) and 41 (fade-out setup),
+    // followed by a separate color report. Byte 39 is reserved.
+    if(!this._lightbarReady){const setup=new Array(47).fill(0);setup[38]=2;setup[41]=2;this._sendOutput(setup);this._lightbarReady=true;}
+    this._sendOutput(buildCommon({ led: [clamp(r | 0, 0, 255), clamp(g | 0, 0, 255), clamp(b | 0, 0, 255)] }));
+  }
 
   // ---- GATED calibration (NVS write — brick risk). Only invoked by the gated tool. ----
   calibrationPreflight() {

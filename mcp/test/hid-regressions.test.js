@@ -82,12 +82,31 @@ test('output reports have standard lengths and correct Bluetooth CRC coverage', 
     const packets = []; const c = new Controller(); c._mode = mode;
     c.dev = { write(packet) { packets.push(packet); } };
     c.applyLightbar(10, 20, 30); c.applyLightbar(10, 20, 30);
-    const packet = packets[0]; assert.equal(packet.length, mode === 'usb' ? 63 : 78);
+    assert.equal(packets.length, 3);
+    const packet = packets[1];
+    for (const output of packets) assert.equal(output.length, mode === 'usb' ? 63 : 78);
     if (mode === 'bt') {
-      assert.deepEqual(packet.slice(0, 3), [0x31, 0, 0x10]); assert.equal(packets[1][1], 0x10);
+      assert.deepEqual(packet.slice(0, 3), [0x31, 0x10, 0x10]); assert.equal(packets[2][1], 0x20);
       assert.deepEqual(packet.slice(47, 50), [10, 20, 30]);
-      assert.equal(Buffer.from(packet).readUInt32LE(74), crc32([0xa2, ...packet.slice(0, 74)]));
+      for (const output of packets) assert.equal(Buffer.from(output).readUInt32LE(74), crc32([0xa2, ...output.slice(0, 74)]));
     }
+  }
+});
+test('lightbar setup precedes the first color only and close resets setup and transport', () => {
+  for (const mode of ['usb', 'bt']) {
+    const packets = []; const c = new Controller(); c._mode = mode;
+    c.dev = { write(packet) { packets.push(packet); }, close() {} };
+    c.applyLightbar(10, 20, 30); c.applyLightbar(40, 50, 60);
+    const offset = mode === 'usb' ? 1 : 3;
+    assert.equal(packets.length, 3);
+    assert.equal(packets[0][offset + 38], 2); assert.equal(packets[0][offset + 41], 2);
+    assert.equal(packets[0][offset + 39], 0);
+    for (const output of packets.slice(1)) {
+      assert.equal(output[offset + 38], 0); assert.equal(output[offset + 39], 0);
+    }
+    assert.deepEqual(packets[1].slice(offset + 44, offset + 47), [10, 20, 30]);
+    assert.deepEqual(packets[2].slice(offset + 44, offset + 47), [40, 50, 60]);
+    c.close(); assert.equal(c._lightbarReady, false); assert.equal(c.mode, null);
   }
 });
 test('unknown transport refuses output rather than guessing Bluetooth', () => {
