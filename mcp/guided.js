@@ -6,6 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { listControllers } from './hid/dualsense.js';
 export { withController } from './hid/controller-session.js';
 import { StickCoach } from './coach.js';
+import { assessStickTuning } from './stick-tuning.js';
 
 export const PHASES = {
   rest: 'Put the controller down. Leave BOTH sticks completely untouched for 5 seconds.',
@@ -77,6 +78,12 @@ export function analyzePhase(phase, frames, expectedMs) {
       if(unsettledReleases) result.warnings.push(`${side}: ${unsettledReleases} releases moved beyond 35% after return; inspect technique or snapback before keeping settings.`);
       if(!result[side].valid){result.valid=false;result.warnings.push(`${side}: need clear flick-and-release events in all four directions.`);}
     } else result[side]=base;
+    if (phase==='rest' || phase==='buttons' || phase==='verify') {
+      result[side].quietAxes=Object.fromEntries([x,y].map((axis,i)=>{
+        const values=frames.map(f=>f[axis]),mean=values.reduce((sum,value)=>sum+value,0)/values.length;
+        return [i?'y':'x',{meanRaw:round(mean),minRaw:Math.min(...values),maxRaw:Math.max(...values),stddevRaw:round(Math.sqrt(values.reduce((sum,value)=>sum+(value-mean)**2,0)/values.length))}];
+      }));
+    }
   }
   if(phase==='buttons') {
     result.contaminated=frames.some(f=>Object.values(AXES).some(([x,y])=>radius(f,x,y)>.12));
@@ -124,7 +131,8 @@ export class SessionStore {
     const complete=Object.values(latest).every(c=>c?.metrics.valid) && Object.entries(latest).every(([p,c])=>p==='verify'||c.number<latest.verify.number) && new Set(Object.values(latest).map(c=>c?.metrics.mode)).size===1;
     const finalRest=s.captures.filter(c=>c.phase==='rest'||c.phase==='verify').at(-1);
     const deadzones=finalRest?.metrics.valid?{left:finalRest.metrics.left.deadzonePercent,right:finalRest.metrics.right.deadzonePercent}:null;
-    return {...s,complete,logPath:join(this.dir(id),'summary.md'),recommendation:{radialDeadzonePercent:deadzones,applied:false,note:`Measured p99 rest radius + 1 percentage point. Candidate for game settings; verify in play. No controller calibration has been written.`,nextAction:!complete?'Repeat missing/invalid phases before deciding.':'Review measured center and circularity; game deadzones are separate settings. On-controller changes need verified before/after measurements.'},comparison:rests.length>1&&sameMode?{leftOffsetDeltaRaw:round(last.metrics.left.offsetRaw-first.metrics.left.offsetRaw),rightOffsetDeltaRaw:round(last.metrics.right.offsetRaw-first.metrics.right.offsetRaw),leftJitterDeltaRaw:round(last.metrics.left.jitterRaw-first.metrics.left.jitterRaw),rightJitterDeltaRaw:round(last.metrics.right.jitterRaw-first.metrics.right.jitterRaw),note:'Last valid rest minus first valid rest; negative is less measured offset/noise. No causal improvement claim.'}:null};
+    const report={...s,complete,logPath:join(this.dir(id),'summary.md'),recommendation:{radialDeadzonePercent:deadzones,applied:false,note:`Measured p99 rest radius + 1 percentage point. Candidate for game settings; verify in play. No controller calibration has been written.`,nextAction:!complete?'Repeat missing/invalid phases before deciding.':'Review measured center and circularity; game deadzones are separate settings. On-controller changes need verified before/after measurements.'},comparison:rests.length>1&&sameMode?{leftOffsetDeltaRaw:round(last.metrics.left.offsetRaw-first.metrics.left.offsetRaw),rightOffsetDeltaRaw:round(last.metrics.right.offsetRaw-first.metrics.right.offsetRaw),leftJitterDeltaRaw:round(last.metrics.left.jitterRaw-first.metrics.left.jitterRaw),rightJitterDeltaRaw:round(last.metrics.right.jitterRaw-first.metrics.right.jitterRaw),note:'Last valid rest minus first valid rest; negative is less measured offset/noise. No causal improvement claim.'}:null};
+    return {...report,tuning:assessStickTuning(report)};
   }
   log(s) {
     const lines=[`# Stick session ${s.id}`,s.goal,`Started ${s.created}`,'Controller writes: none. Settings applied: none.',''];
