@@ -8,6 +8,10 @@ the physical instruction. `list_sessions` and `session_report` resume saved work
 For a continuous guided sequence, call `run_guided_session` once the user starts.
 Clients should display MCP logging/progress notifications and allow cancellation.
 Client delivery latency varies; this is not a promise of real-time chat rendering.
+Progress notifications update progress and instruction text at up to 10 Hz.
+Structured logs carry per-stick pace, direction and rim-contact cues at up to 1 Hz,
+plus stage changes and bounded corrections, including for clients without a
+progress token. A preparation countdown never substitutes for evidence.
 
 The sequence checks stable rest, clockwise and counterclockwise rim coverage,
 four-direction flick/release evidence, clean button presses, and a final rest.

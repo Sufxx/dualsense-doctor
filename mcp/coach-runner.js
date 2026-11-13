@@ -2,8 +2,8 @@
 import { StickCoach } from './coach.js';
 export const RUN_STEPS=[
   {phase:'rest',label:'Hands off both sticks'},
-  {phase:'range',direction:'clockwise',label:'Turn both sticks CLOCKWISE along the rim'},
-  {phase:'range',direction:'counterclockwise',label:'Now turn COUNTERCLOCKWISE along the rim'},
+  {phase:'range',direction:'clockwise',label:'Trace the FULL OUTER EDGE with both sticks, CLOCKWISE'},
+  {phase:'range',direction:'counterclockwise',label:'Now trace the FULL OUTER EDGE, COUNTERCLOCKWISE'},
   {phase:'release',label:'Flick, release fully, and let each stick settle'},
   {phase:'buttons',label:'Press buttons with thumbs clear of the sticks'},
   {phase:'verify',label:'Put the controller down; final hands-off check'},
@@ -46,8 +46,10 @@ export async function runGuided(c,store,{onEvent=()=>{},signal,clock=()=>perform
           await emit({type:'correction',message:warning,phase:step.phase,details:lastState.details,latest:frame});
           lastWarning=warning;lastWarningAt=now;
         }
-        if(now-lastEmit>=1000) {
-          await emit({type:'progress',phase:step.phase,message:lastState.message,progress:(index+lastState.progress)/steps.length,phaseProgress:lastState.progress,secondsRemaining:lastState.secondsRemaining,latest:frame,details:lastState.details});lastEmit=now;
+        if(!warning)lastWarning='';
+        // Live displays need current guidance independently of throttled text logs.
+        if(now-lastEmit>=100) {
+          await emit({type:'progress',phase:step.phase,direction:step.direction,message:lastState.message,warning:lastState.warning||null,progress:(index+lastState.progress)/steps.length,phaseProgress:lastState.progress,secondsRemaining:lastState.secondsRemaining,latest:frame,details:lastState.details});lastEmit=now;
         }
         if(lastState.complete)break;
         if(lastState.details.contaminated) {

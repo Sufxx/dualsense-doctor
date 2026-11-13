@@ -41,6 +41,43 @@ test('slow movement and incomplete rim contact receive distinct feedback',()=>{
   const inner=setup();let result;for(let i=0;i<200;i++)result=inner.feed(circleFrame(i*.06,.5));
   assert.equal(result.complete,false);assert.match(result.warning,/outer rim/i);
 });
+test('range cues identify each stick and prioritize rim contact before pace',()=>{
+  const run=setup();let result;
+  for(let i=0;i<60;i++)result=run.feed({...circleFrame(-i*.06),lx:160,ly:128});
+  assert.equal(result.details.left.cueCode,'reach_rim');
+  assert.equal(result.details.right.cueCode,'wrong_direction');
+  assert.match(result.details.right.cueMessage,/clockwise/);
+  assert.equal(result.details.left.cueTone,'warning');
+  assert.equal(result.complete,false);
+});
+test('range cues expose too-fast, too-slow and accepted pace without inventing completion',()=>{
+  for(const [speed,code] of [[Math.PI*2,'too_fast'],[.1,'too_slow'],[Math.PI/2,'keep_going']]) {
+    const result=circle(setup(),2,speed);
+    assert.equal(result.details.left.cueCode,code);
+    assert.ok(result.details.left.speedRadPerSec>=0);
+    assert.equal(result.complete,false);
+  }
+});
+test('holding the rim at startup is not described as good pace',()=>{
+  const run=setup();run.feed(circleFrame(0));const result=run.feed(circleFrame(0));
+  assert.equal(result.details.left.cueTone,'neutral');
+  assert.equal(result.details.left.pace,'Start turning');assert.equal(result.complete,false);
+});
+test('stale and invalid input replace directional cues until fresh evidence returns',()=>{
+  const run=setup();circle(run,1,Math.PI/2);
+  assert.equal(run.advance(300).details.left.cueCode,'stale');
+  assert.equal(run.feed(circleFrame(1.5)).details.left.cueCode,'keep_going');
+  assert.equal(run.feed({lx:NaN}).details.left.cueCode,'waiting_input');
+});
+test('rest and release cues tell each stick what to do next',()=>{
+  const resting=setup('rest'),rest=resting.feed({lx:200});
+  assert.equal(rest.details.left.cueCode,'hands_off');assert.equal(rest.details.right.cueCode,'hold_still');
+  const releasing=setup('release');
+  assert.equal(releasing.feed({lx:255,rx:255}).details.left.cueCode,'release_now');
+  assert.equal(releasing.feed(neutral).details.left.cueCode,'settle');
+  const next=releasing.feed(neutral,600);
+  assert.equal(next.details.left.cueCode,'flick_next');assert.match(next.details.left.cueMessage,/down/);
+});
 test('partial arcs do not pass despite repeated movement',()=>{
   const run=setup();let result;for(let i=0;i<500;i++)result=run.feed(circleFrame(Math.sin(i*.04)*.6));
   assert.equal(result.complete,false);assert.ok(result.details.left.coveredSectors<14);

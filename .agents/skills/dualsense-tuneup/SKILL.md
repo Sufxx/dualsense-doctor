@@ -46,6 +46,11 @@ MCP coaching workflow. The actual desktop card and its preview renderer may have
 different network access; test the target client rather than assuming either works.
 Use the card's single Start and Pause/Resume/Stop controls when supported. Display
 preferences affect the view, not the underlying measurement or controller settings.
+During a check, use the per-stick cue and actual outer-edge coverage to explain
+what to adjust. Preparation countdowns are separate from evidence progress: a timer
+reaching zero never proves a movement passed. Progress notifications carry fresh
+corrections; relay meaningful cue changes without narrating every sample. Report
+render FPS and received input Hz separately, without promising measured latency.
 
 Session logs, device identities, generated capability-bearing HTML, and runtime
 files stay private. Share only selected generic code or synthetic examples when

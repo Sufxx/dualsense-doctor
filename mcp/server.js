@@ -12,6 +12,7 @@ import { z } from 'zod';
 import { withController } from './hid/controller-session.js';
 import { SessionStore, PHASES, DEFAULT_SECONDS, resolveSessionController } from './guided.js';
 import { runGuided } from './coach-runner.js';
+import { coachingNotifications } from './coaching-notifications.js';
 import {
   listControllers, Controller, diagnoseFromFrames,
   TRIGGER_PRESETS, effFeedback, effWeapon, effOff,
@@ -33,16 +34,9 @@ server.registerTool('run_guided_session',{
   inputSchema:{...PATH,start:z.literal(true).describe('The user is beginning this measurement sequence now')},
 },async({path},extra)=>{
   if(controllerBusy)throw Error('Another guided run already owns the controller.');
-  controllerBusy=true;let lastProgress=0;
+  controllerBusy=true;
   try {
-    return await withController(path,async c=>ok(await runGuided(c,sessions,{signal:extra.signal,onEvent:async e=>{
-      const token=extra._meta?.progressToken;
-      if(token!==undefined&&Number.isFinite(e.progress)) {
-        lastProgress=Math.max(lastProgress,Math.round(e.progress*100));
-        await extra.sendNotification({method:'notifications/progress',params:{progressToken:token,progress:lastProgress,total:100,message:e.message}});
-      }
-      await server.sendLoggingMessage({level:e.type==='correction'?'warning':'info',logger:'dualsense-coach',data:e});
-    }})));
+    return await withController(path,async c=>ok(await runGuided(c,sessions,{signal:extra.signal,onEvent:coachingNotifications(server,extra)})));
   } finally {controllerBusy=false;}
 });
 

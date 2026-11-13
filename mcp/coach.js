@@ -9,8 +9,9 @@ const round=v=>Math.round(v*100)/100;
 const point=(frame,[x,y])=>({x:(frame[x]-128)/127,y:(frame[y]-128)/127});
 const radius=p=>Math.hypot(p.x,p.y);
 const wrap=a=>Math.atan2(Math.sin(a),Math.cos(a));
+const cue=(cueCode,cueMessage,cueTone='neutral',pace='')=>({cueCode,cueMessage,cueTone,pace});
 const sideState=()=>({history:[],angle:null,lastAt:null,netAngle:0,sectors:new Set(),velocity:0,
-  radius:0,releases:0,releaseDirections:new Set(),unsettledReleases:0,lastReturn:null,cooldownUntil:0,ready:true,armed:null,pending:null,postReturnPeak:0,fastFlicks:0});
+  speed:0,radius:0,releases:0,releaseDirections:new Set(),unsettledReleases:0,lastReturn:null,cooldownUntil:0,ready:true,armed:null,pending:null,postReturnPeak:0,fastFlicks:0,contaminated:false,cue:cue('waiting_input','Waiting for fresh stick input.')});
 
 export class StickCoach {
   constructor({clock=()=>performance.now(),continuous=false}={}) {
@@ -52,7 +53,7 @@ export class StickCoach {
     if(this.complete&&!this.continuous) {this.lastAt=now;return this.state();}
     if(gap) {
       this.stableSince=null;this.window=[];
-      for(const s of Object.values(this.sides)){s.angle=null;s.lastAt=null;s.history=[];s.armed=null;s.pending=null;}
+      for(const s of Object.values(this.sides)){s.angle=null;s.lastAt=null;s.history=[];s.velocity=0;s.speed=0;s.armed=null;s.pending=null;}
     }
     this.warning=null;
     const elapsed=now-this.startedAt;
@@ -73,8 +74,10 @@ export class StickCoach {
     for(const [side,axes] of Object.entries(AXES)) {
       const s=this.sides[side],p=point(frame,axes),r=radius(p),a=Math.atan2(p.y,p.x);
       s.radius=r;
+      s.cue=cue('keep_going',`Trace the full outer edge ${this.direction}.`,'neutral','Start turning');
       if(r<.85) {
-        s.angle=null;s.lastAt=null;s.history=[];s.velocity=0;
+        s.angle=null;s.lastAt=null;s.history=[];s.velocity=0;s.speed=0;
+        s.cue=cue('reach_rim',`Push to the outer edge, then turn ${this.direction}.`,'warning','Reach the edge');
         warnings.push(`${side}: reach the outer rim.`);continue;
       }
       if(s.angle!==null) {
@@ -83,6 +86,7 @@ export class StickCoach {
         const seconds=s.history.reduce((sum,v)=>sum+v.dt,0)/1000;
         s.velocity=seconds?s.history.reduce((sum,v)=>sum+v.delta,0)/seconds:0;
         const speed=seconds?s.history.reduce((sum,v)=>sum+Math.abs(v.delta),0)/seconds:0;
+        s.speed=speed;
         // Count net travel, so back-and-forth arcs cannot manufacture circles.
         // Both endpoints must be on the rim, the interval fresh, and motion at
         // an observable pace. A wrong-way move subtracts earned net travel.
@@ -90,9 +94,13 @@ export class StickCoach {
           s.netAngle=Math.max(0,s.netAngle+direction*delta);
           if(direction*delta>0)s.sectors.add((Math.floor((a+Math.PI)/TAU*16)+16)%16);
         }
-        if(speed>3)warnings.push(`${side}: slow down. Aim for one turn every 3–6 seconds.`);
-        else if(direction*s.velocity<-.2)warnings.push(`${side}: turn ${this.direction}.`);
-        else if(elapsed>1000&&Math.abs(s.velocity)<.35)warnings.push(`${side}: turn a little faster and keep moving around the rim.`);
+        if(speed>3)s.cue=cue('too_fast','Slow down. Aim for one full turn every 3–6 seconds.','warning','Too fast');
+        else if(direction*s.velocity<-.2)s.cue=cue('wrong_direction',`Change direction: turn ${this.direction} along the full outer edge.`,'warning','Wrong direction');
+        else if(elapsed>1000&&Math.abs(s.velocity)<.35)s.cue=cue('too_slow','Turn a little faster and keep moving around the full outer edge.','warning','Too slow');
+        else if(Math.abs(s.velocity)<.35)s.cue=cue('keep_going',`Start turning ${this.direction} along the full outer edge.`,'neutral','Start turning');
+        else if(s.netAngle>=2*TAU&&s.sectors.size>=14)s.cue=cue('complete','Coverage captured. Keep a gentle circle while the other stick finishes.','good','Coverage captured');
+        else s.cue=cue('keep_going',`Good pace. Keep tracing the full outer edge ${this.direction}.`,'good','Good pace');
+        if(s.cue.cueTone==='warning')warnings.push(`${side}: ${s.cue.cueMessage}`);
       }
       s.angle=a;s.lastAt=now;
     }
@@ -108,9 +116,13 @@ export class StickCoach {
 
   rest(frame,now) {
     this.window.push({at:now,frame});this.window=this.window.filter(v=>v.at>=now-250);
-    const moving=Object.values(AXES).some(axes=>radius(point(frame,axes))>.35||axes.some(a=>{
-      const values=this.window.map(v=>v.frame[a]);return Math.max(...values)-Math.min(...values)>5;
-    }));
+    let moving=false;
+    for(const [side,axes] of Object.entries(AXES)) {
+      const s=this.sides[side];s.radius=radius(point(frame,axes));
+      const sideMoving=s.radius>.35||axes.some(a=>{const values=this.window.map(v=>v.frame[a]);return Math.max(...values)-Math.min(...values)>5;});
+      moving||=sideMoving;
+      s.cue=sideMoving?cue('hands_off','Let go completely. Waiting for this stick to settle.','warning'):cue('hold_still','Keep this stick untouched.','good');
+    }
     if(moving){this.stableSince=null;this.warning='Hands off both sticks. Waiting for them to settle.';}
     else if(this.stableSince===null)this.stableSince=now;
     const stable=this.stableSince===null?0:now-this.stableSince;
@@ -124,7 +136,11 @@ export class StickCoach {
       for(let bit=0;bit<15;bit++)if(rising&(1<<bit))this.presses++;
     }
     this.previousButtons=current;
-    if(Object.values(AXES).some(axes=>radius(point(frame,axes))>.12))this.contaminated=true;
+    for(const [side,axes] of Object.entries(AXES)) {
+      const s=this.sides[side];s.radius=radius(point(frame,axes));s.contaminated||=s.radius>.12;
+      s.cue=s.contaminated?cue('hands_off','Stick movement detected. Keep your thumb clear for the repeat.','warning'):cue('press_buttons','Press and release buttons; keep this stick untouched.');
+    }
+    if(Object.values(this.sides).some(s=>s.contaminated))this.contaminated=true;
     this.progress=Math.min(clamp(elapsed/8000),clamp(this.presses/8));
     this.secondsRemaining=Math.max(0,(8000-elapsed)/1000);
     this.complete=elapsed>=8000&&this.presses>=8&&!this.contaminated;
@@ -152,6 +168,11 @@ export class StickCoach {
       }
       if(s.pending?.unsettled&&now-s.pending.at<=300)warnings.push(`${side}: movement after return. Let go fully and allow the stick to settle; this may include snapback.`);
       else if(s.lastReturn!==null&&now-s.lastReturn<500&&s.fastFlicks)warnings.push(`${side}: leave at least half a second between flicks.`);
+      if(s.pending?.unsettled&&now-s.pending.at<=300)s.cue=cue('settle','Movement after return. Let go fully and allow this stick to settle.','warning');
+      else if(s.lastReturn!==null&&now-s.lastReturn<500)s.cue=cue('settle','Wait at center for half a second before the next flick.');
+      else if(s.armed)s.cue=cue('release_now','Let go completely so the stick returns on its own.');
+      else if(s.releaseDirections.size===4)s.cue=cue('complete','All four directions captured. Keep this stick untouched.','good');
+      else {const next=[0,1,2,3].find(d=>!s.releaseDirections.has(d));s.cue=cue('flick_next',`Flick ${['right','down','left','up'][next]}, then let go completely.`);}
     }
     this.progress=Math.min(...Object.values(this.sides).map(s=>clamp(s.releaseDirections.size/4)));
     // Keep observing the last return rather than ending before a rebound can arrive.
@@ -168,12 +189,16 @@ export class StickCoach {
     const details={elapsedMs:elapsed,timedOut:elapsed>=30000&&!this.complete,inputFresh:this.lastAt!==null&&!stale&&!this.inputInvalid};
     if(this.phase==='range') {
       details.direction=this.direction;details.coachingDefaults={minRimRadius:.85,minRadiansPerSecond:.35,maxRadiansPerSecond:3,targetSecondsPerTurn:[3,6],targetTurns:2,minSectors:14};
-      for(const [side,s] of Object.entries(this.sides))details[side]={radius:round(s.radius),angularVelocity:round(s.velocity),turns:round(s.netAngle/TAU),coveredSectors:s.sectors.size};
+      for(const [side,s] of Object.entries(this.sides))details[side]={radius:round(s.radius),angularVelocity:round(s.velocity),speedRadPerSec:round(s.speed),turns:round(s.netAngle/TAU),coveredSectors:s.sectors.size};
     } else if(this.phase==='release') {
       details.evidenceOnly=true;
       for(const [side,s] of Object.entries(this.sides))details[side]={releases:s.releases,directions:[...s.releaseDirections],unsettledReleases:s.unsettledReleases,postReturnPeakPercent:round(s.postReturnPeak*100),fastFlicks:s.fastFlicks};
     } else if(this.phase==='buttons')Object.assign(details,{presses:this.presses,contaminated:this.contaminated,restExcursionLimit:.12});
     else details.stableMs=stale||this.inputInvalid||this.stableSince===null?0:Math.max(0,this.clock()-this.stableSince);
+    for(const [side,s] of Object.entries(this.sides)) {
+      const guidance=stale?cue('stale','Waiting for fresh controller reports.','warning'):this.inputInvalid||this.lastAt===null?cue('waiting_input','Waiting for fresh stick input.'):this.complete?cue('complete','Evidence captured for this step.','good'):s.cue;
+      details[side]={radius:round(s.radius),...details[side],...guidance};
+    }
     return {phase:this.phase,complete:this.complete,message:this.complete?'Capture evidence complete.':warning||this.message,warning,
       progress:this.complete?1:stale?0:this.progress,secondsRemaining:this.secondsRemaining===null?null:round(this.secondsRemaining),
       latest:stale||this.inputInvalid?null:this.latest?{...this.latest}:null,details};
