@@ -36,6 +36,16 @@ calibration tool; that protocol remains outside this feature's qualification.
 
 ## Metrics and credits
 
+`compare_sessions` compares up to ten saved complete rounds from one identified
+controller, transport and recorded calibration history. It rechecks phase quality
+and final-verification order. The repeated-round deadzone starting point is the
+worst valid quiet rest/button/verification peak plus one percentage point, rounded
+up. It is intentionally more conservative than the single-report p99 candidate.
+Large or incompatible evidence withholds a recommendation. Circularity and release
+overshoot are reported separately. Repeated checks establish observed consistency;
+they do not train a policy, tune firmware, or guarantee zero future drift. Begin a
+new comparison after external calibration/input changes that the tool cannot detect.
+
 Rest reports include offset, jitter and radial displacement. Deadzone candidates
 are observed p99 radial displacement plus a margin; they remain unapplied.
 Range reports distinguish axis limits, sector coverage and RMS circularity.

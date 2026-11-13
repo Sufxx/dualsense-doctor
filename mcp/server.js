@@ -13,6 +13,7 @@ import { withController } from './hid/controller-session.js';
 import { SessionStore, PHASES, DEFAULT_SECONDS, resolveSessionController } from './guided.js';
 import { runGuided } from './coach-runner.js';
 import { coachingNotifications } from './coaching-notifications.js';
+import { compareSessionReports } from './session-comparison.js';
 import {
   listControllers, Controller, diagnoseFromFrames,
   TRIGGER_PRESETS, effFeedback, effWeapon, effOff,
@@ -47,6 +48,7 @@ server.registerTool('start_session', {
 },async({path,goal})=>withController(path,c=>ok(sessions.start(c.info,goal))));
 server.registerTool('list_sessions', {description:'List saved sessions to resume after a restart.',inputSchema:{}},async()=>ok({sessions:sessions.list()}));
 server.registerTool('session_report', {description:'Read session history, concise log location, quality, rest comparison and unapplied tuning candidates.',inputSchema:{session_id:z.string().uuid()}},async({session_id})=>ok(sessions.report(session_id)));
+server.registerTool('compare_sessions', {description:'Compare up to ten saved measurement rounds for the same controller, transport and calibration history. Reports a conservative observed-peak deadzone starting point and circularity consistency. No settings applied or zero-drift guarantee.',inputSchema:{session_ids:z.array(z.string().uuid()).min(1).max(10)}},async({session_ids})=>ok(compareSessionReports([...new Set(session_ids)].map(id=>sessions.report(id)))));
 server.registerTool('capture_phase', {
   description: 'Capture ONE instructed phase only after the user says ready. Read-only HID input; persists raw samples and concise log. Returns quality and the next instruction. Never capture movement while user reads instructions.',
   inputSchema:{session_id:z.string().uuid(),phase:z.enum(Object.keys(PHASES)),ready:z.literal(true).describe('Set only after user confirmed readiness'),seconds:z.number().min(3).max(15).optional(),note:z.string().max(500).default('')},

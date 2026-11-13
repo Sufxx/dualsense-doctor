@@ -32,6 +32,14 @@ a game setting was applied. Keep software-deadzone candidates unapplied until a
 specific supported setting is changed and rechecked. After an external calibration
 change, start a new session or clearly separate before/after evidence.
 
+For repeated checks, compare complete saved rounds with `compare_sessions`.
+The repeated-round starting deadzone covers the worst valid quiet peak plus one
+percentage point, rounded up; it differs from a single report's p99 estimate.
+Never select only the best run or interpret repetition as firmware improvement.
+Use the same controller, connection type and unchanged setup. Begin a new
+comparison after any external calibration or game/input-layer change. Report
+circularity and release overshoot separately; do not promise zero future drift.
+
 Controller-memory calibration is a separate opt-in operation. This skill does not
 enable it or grant permission to save permanently. Use only available, validated
 calibration tools with a deliberate decision on the reviewed result; retain the
@@ -51,6 +59,10 @@ what to adjust. Preparation countdowns are separate from evidence progress: a ti
 reaching zero never proves a movement passed. Progress notifications carry fresh
 corrections; relay meaningful cue changes without narrating every sample. Report
 render FPS and received input Hz separately, without promising measured latency.
+The optional card offers 1/3/5-round targets; Repeat starts a round only when
+pressed. A new comparison or disconnect clears the live comparison, while saved
+session logs remain available for later `compare_sessions` calls. Lightbar Apply
+works before a test when connected; its effect is not saved in controller memory.
 
 Session logs, device identities, generated capability-bearing HTML, and runtime
 files stay private. Share only selected generic code or synthetic examples when
