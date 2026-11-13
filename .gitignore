@@ -25,3 +25,6 @@ npm-debug.log*
 .env.local
 .env.*.local
 # keep .env.example committed (it documents config, no secrets)
+
+# Private measurement evidence
+/sessions/
