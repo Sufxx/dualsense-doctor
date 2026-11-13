@@ -10,6 +10,8 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 import { withController } from './hid/controller-session.js';
+import { SessionStore, PHASES, DEFAULT_SECONDS, resolveSessionController } from './guided.js';
+import { runGuided } from './coach-runner.js';
 import {
   listControllers, Controller, diagnoseFromFrames,
   TRIGGER_PRESETS, effFeedback, effWeapon, effOff,
@@ -17,11 +19,51 @@ import {
 
 const ALLOW_CALIB = process.env.DUALSENSE_MCP_ALLOW_CALIBRATION === '1';
 
-const server = new McpServer({ name: 'dualsense-doctor', version: '1.0.0' });
+const GUIDE = "Use responsive, read-only DualSense coaching after the user begins one session. run_guided_session monitors speed, direction, rim contact, settling and button contamination, then advances only when movement criteria pass. Relay MCP progress and logging notifications; their delivery latency depends on the client, so do not promise an instant live display. Targeted capture_phase remains available for repeat measurements. Circularity, resting drift and game deadzones are different metrics. Preserve balanced range rather than chasing a zero circularity score; the referenced DualShock Tools guidance is 7–9%, with symmetry taking priority. These are measurements and unapplied setting candidates, not controller calibration. Existing opt-in firmware calibration is separate and is not qualified by the coaching tests. Return concise logs and distinguish observations from actual changes.";
+const server = new McpServer({ name: 'dualsense-doctor', version: '1.1.0' }, { instructions: GUIDE, capabilities: { logging: {} } });
+const sessions = new SessionStore();
 
 // open a fresh handle per call (node-hid handles are blocking) and always close it.
 const ok = (obj) => ({ content: [{ type: 'text', text: JSON.stringify(obj, null, 2) }] });
 const PATH = { path: z.string().optional().describe('Specific controller path from list_controllers; omit to use the first found') };
+
+let controllerBusy=false;
+server.registerTool('run_guided_session',{
+  description:'Read input continuously and coach movement criteria. Emits logging/progress notifications; client delivery latency varies. No controller calibration writes.',
+  inputSchema:{...PATH,start:z.literal(true).describe('The user is beginning this measurement sequence now')},
+},async({path},extra)=>{
+  if(controllerBusy)throw Error('Another guided run already owns the controller.');
+  controllerBusy=true;let lastProgress=0;
+  try {
+    return await withController(path,async c=>ok(await runGuided(c,sessions,{signal:extra.signal,onEvent:async e=>{
+      const token=extra._meta?.progressToken;
+      if(token!==undefined&&Number.isFinite(e.progress)) {
+        lastProgress=Math.max(lastProgress,Math.round(e.progress*100));
+        await extra.sendNotification({method:'notifications/progress',params:{progressToken:token,progress:lastProgress,total:100,message:e.message}});
+      }
+      await server.sendLoggingMessage({level:e.type==='correction'?'warning':'info',logger:'dualsense-coach',data:e});
+    }})));
+  } finally {controllerBusy=false;}
+});
+
+server.registerPrompt('calibrate_sticks_best', { description: 'Guided stick measurement, concise logs, and iterative tuning with readiness between phases.' }, async () => ({messages:[{role:'user',content:{type:'text',text:GUIDE}}]}));
+server.registerTool('start_session', {
+  description: 'Start a logged guided stick tuning session. Returns the first instruction. Wait for user readiness before capture_phase. Does not change calibration.',
+  inputSchema: {...PATH,goal:z.string().max(300).optional()},
+},async({path,goal})=>withController(path,c=>ok(sessions.start(c.info,goal))));
+server.registerTool('list_sessions', {description:'List saved sessions to resume after a restart.',inputSchema:{}},async()=>ok({sessions:sessions.list()}));
+server.registerTool('session_report', {description:'Read session history, concise log location, quality, rest comparison and unapplied tuning candidates.',inputSchema:{session_id:z.string().uuid()}},async({session_id})=>ok(sessions.report(session_id)));
+server.registerTool('capture_phase', {
+  description: 'Capture ONE instructed phase only after the user says ready. Read-only HID input; persists raw samples and concise log. Returns quality and the next instruction. Never capture movement while user reads instructions.',
+  inputSchema:{session_id:z.string().uuid(),phase:z.enum(Object.keys(PHASES)),ready:z.literal(true).describe('Set only after user confirmed readiness'),seconds:z.number().min(3).max(15).optional(),note:z.string().max(500).default('')},
+},async({session_id,phase,seconds,note})=>{
+  const s=sessions.get(session_id);
+  return withController(resolveSessionController(s.controller).path,c=>{
+    const expectedMs=Math.round((seconds??DEFAULT_SECONDS[phase])*1000);
+    const sample=c.sampleSticks(expectedMs);
+    return ok(sessions.record(session_id,phase,sample.frames,c.info,note,expectedMs));
+  });
+});
 
 // ---------------- read-only / safe tools ----------------
 server.registerTool('list_controllers',

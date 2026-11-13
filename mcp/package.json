@@ -13,11 +13,12 @@
   },
   "scripts": {
     "start": "node server.js",
-    "test": "node --test test/*.test.js"
+    "test": "node --test test/*.test.js",
+    "smoke": "node test/smoke-readonly.js"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "1.29.0",
+    "@modelcontextprotocol/sdk": "1.32.2",
     "node-hid": "3.3.0",
-    "zod": "3.25.76"
+    "zod": "4.6.7"
   }
 }
