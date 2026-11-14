@@ -52,15 +52,29 @@ function inspect(report) {
   try{calibration=JSON.stringify(actions);}catch{return {reason:'Calibration history is invalid. Start a fresh comparison.'};}
   return {controller,mode,calibration,quiet,range:latest.range.metrics,release:latest.release.metrics};
 }
+function validatedCircularity(circle) {
+  if(circle?.coveredSectors!==48||circle.totalSectors!==48||!percent(circle.errorPercent))return null;
+  // Older reports can lack bins. If bins were recorded, do not accept summary
+  // claims that contradict that evidence. Stored radii are rounded to .01:
+  // RMS can differ by at most .5 pp, opposite differences by at most 1 pp,
+  // plus .005 pp from rounding each reported summary itself. A stored .20
+  // can originate just above the analyzer coverage threshold after rounding.
+  if(Object.hasOwn(circle,'sectorRadii')){
+    const bins=circle.sectorRadii;
+    if(!Array.isArray(bins)||bins.length!==48||bins.some(r=>!Number.isFinite(r)||r<.2||r>1.5))return null;
+    const rms=100*Math.sqrt(bins.reduce((sum,r)=>sum+(r-1)**2,0)/48);
+    const opposite=100*Math.max(...bins.slice(0,24).map((r,i)=>Math.abs(r-bins[i+24])));
+    if(Math.abs(rms-circle.errorPercent)>.505+1e-9||!percent(circle.maxOppositeDifferencePercent)
+      ||Math.abs(opposite-circle.maxOppositeDifferencePercent)>1.005+1e-9)return null;
+  }
+  return circle;
+}
 function summarizeSide(rounds,side) {
   const peaks=rounds.map(r=>Math.max(...r.quiet.map(c=>c.metrics[side].peakRadiusPercent)));
   const observedPeakPercent=round(Math.max(...peaks));
   // This conservative review ceiling is an empirical guard, not a hardware limit.
   const suggested=Math.ceil(observedPeakPercent+1),reliable=suggested<=20;
-  const circularities=rounds.map(r=>{
-    const c=r.range[side]?.circularity;
-    return c?.coveredSectors===48&&c.totalSectors===48&&percent(c.errorPercent)?c:null;
-  });
+  const circularities=rounds.map(r=>validatedCircularity(r.range[side]?.circularity));
   const full=circularities.filter(Boolean),symmetry=full.map(c=>c.maxOppositeDifferencePercent).filter(percent);
   const releasePeaks=rounds.map(r=>r.release[side]?.postReturnPeakPercent).filter(percent);
   return {

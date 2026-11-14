@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {compareSessionReports} from '../session-comparison.js';
+import {circularityFromFrames} from '../guided.js';
 
 function report(index=0,peak=3,options={}) {
   const mode=options.mode||'usb',epoch=options.actions?.length||0;
@@ -97,6 +98,35 @@ test('partial circularity never becomes a full-circle result or latest measureme
   assert.deepEqual(result.left.circularity,{min:7,max:7,latest:null,rounds:1,maxOppositeDifferencePercent:2});
   a.captures[1].metrics.left.circularity=b.captures[1].metrics.left.circularity;
   assert.equal(compareSessionReports([a,b]).left.circularity,null);
+});
+
+test('contradictory measured circularity bins are unavailable without hiding quiet evidence',()=>{
+  for(const corrupt of [c=>c.sectorRadii=Array(48).fill(0),c=>c.sectorRadii=Array(47).fill(1),c=>c.sectorRadii[2]=NaN,c=>c.sectorRadii[0]=1.51,c=>c.errorPercent=80,c=>c.maxOppositeDifferencePercent=90]) {
+    const r=report(),circle={coveredSectors:48,totalSectors:48,errorPercent:0,maxOppositeDifferencePercent:0,sectorRadii:Array(48).fill(1)};
+    corrupt(circle);r.captures[1].metrics.left.circularity=circle;
+    const result=compareSessionReports([r]);assert.equal(result.comparable,true);
+    assert.equal(result.left.circularity,null);assert.equal(result.left.suggestedDeadzonePercent,4);
+  }
+});
+
+test('circularity validation accepts analyzer rounding across symmetric and asymmetric sweeps',()=>{
+  for(const verticalScale of [.87,.94,1]){
+    const frames=Array.from({length:2400},(_,i)=>{const a=i*Math.PI*4/2400;return {lx:Math.round(127.5+127*Math.cos(a)),ly:Math.round(127.5+127*verticalScale*Math.sin(a))};});
+    const circle=circularityFromFrames(frames,'lx','ly'),r=report();
+    r.captures[1].metrics.left.circularity=circle;
+    assert.equal(circle.coveredSectors,48);assert.equal(compareSessionReports([r]).left.circularity.latest,circle.errorPercent);
+  }
+  // A true radius just above .2 can round to .20 without losing observed coverage.
+  const frames=Array.from({length:2400},(_,i)=>{const a=i*Math.PI*4/2400;return {lx:Math.round(127.5+127*Math.cos(a)),ly:Math.round(127.5+127*Math.sin(a))};}).filter(f=>{
+    const x=Math.round(((f.lx-127.5)/128)*100)/100,y=Math.round(((f.ly-127.5)/128)*100)/100;
+    return (Math.round(Math.atan2(y,x)*48/(2*Math.PI))+48)%48!==0;
+  });
+  frames.push({lx:153,ly:129});
+  const rounded=circularityFromFrames(frames,'lx','ly'),edge=report();
+  assert.equal(rounded.coveredSectors,48);assert.ok(rounded.sectorRadii.includes(.2));
+  edge.captures[1].metrics.left.circularity=rounded;
+  assert.equal(compareSessionReports([edge]).left.circularity.latest,rounded.errorPercent);
+  const legacy=report();assert.equal(compareSessionReports([legacy]).left.circularity.latest,7);
 });
 
 test('duplicate sessions are excluded and empty input never fabricates zero drift',()=>{

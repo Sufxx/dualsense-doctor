@@ -34,6 +34,48 @@ test('quiet centered data recommends a small measured radial deadzone',()=>{
   assert.equal(result.valid,true);assert.ok(result.left.deadzonePercent<5);
   assert.equal(result.left.offsetRaw,0);
 });
+
+function recommendationFixture(store) {
+  const session=store.start({path:'synthetic-controller',productId:3302});
+  const quiet=analyzePhase('rest',frames(1251,{mode:'usb'}).map((f,i)=>({...f,t:i*4})),5000);
+  session.captures=['rest','range','release','buttons','verify'].map((phase,i)=>({number:i+1,phase,calibrationEpoch:0,metrics:{...structuredClone(quiet),phase}}));
+  session.captures[3].metrics.contaminated=false;
+  return session;
+}
+
+test('report recommendation retains rare quiet movement instead of selecting the last clean p99',()=>{
+  const dir=mkdtempSync(join(tmpdir(),'ds-recommendation-'));
+  try {
+    const store=new SessionStore(dir),session=recommendationFixture(store);
+    const samples=frames(1251,{mode:'usb'}).map((f,i)=>({...f,t:i*4,lx:i===300?138:128}));
+    session.captures[0].metrics=analyzePhase('rest',samples,5000);
+    assert.equal(session.captures[0].metrics.left.p99RadiusPercent,0);
+    assert.equal(session.captures[0].metrics.left.peakRadiusPercent,7.87);
+    store.save(session);const report=store.report(session.id);
+    assert.equal(report.complete,true);assert.equal(report.recommendation.radialDeadzonePercent.left,9);
+    assert.equal(report.recommendation.radialDeadzonePercent.right,1);
+    assert.match(report.recommendation.note,/worst.*quiet peak/i);
+    assert.equal(report.recommendation.applied,false);
+    session.captures[3].metrics.right.peakRadiusPercent=10;
+    store.save(session);assert.equal(store.report(session.id).recommendation.radialDeadzonePercent.right,11);
+  } finally {rmSync(dir,{recursive:true,force:true});}
+});
+
+test('report recommendation requires a complete current-epoch round and respects the review ceiling',()=>{
+  const dir=mkdtempSync(join(tmpdir(),'ds-recommendation-'));
+  try {
+    const store=new SessionStore(dir),session=recommendationFixture(store);
+    session.captures[0].metrics.left.peakRadiusPercent=25;
+    store.save(session);assert.equal(store.report(session.id).recommendation.radialDeadzonePercent.left,null);
+    session.calibrationActions=[{kind:'synthetic-trial',at:'synthetic-time'}];
+    session.captures.push(...recommendationFixture(store).captures.map(c=>({...c,number:c.number+5,calibrationEpoch:1})));
+    store.save(session);assert.equal(store.report(session.id).recommendation.radialDeadzonePercent.left,1);
+    session.captures.pop();store.save(session);
+    assert.equal(store.report(session.id).recommendation.radialDeadzonePercent,null);
+    session.captures.at(-1).metrics.valid=false;store.save(session);
+    assert.equal(store.report(session.id).recommendation.radialDeadzonePercent,null);
+  } finally {rmSync(dir,{recursive:true,force:true});}
+});
 test('partial sweep fails coverage even when endpoints are reached',()=>{
   const f=frames().map((v,i)=>({...v,lx:i%2?255:0,rx:i%2?255:0}));
   assert.equal(analyzePhase('range',f).valid,false);

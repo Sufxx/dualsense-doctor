@@ -7,6 +7,7 @@ import { listControllers } from './hid/dualsense.js';
 export { withController } from './hid/controller-session.js';
 import { StickCoach } from './coach.js';
 import { assessStickTuning } from './stick-tuning.js';
+import { compareSessionReports } from './session-comparison.js';
 
 export const PHASES = {
   rest: 'Put the controller down. Leave BOTH sticks completely untouched for 5 seconds.',
@@ -117,7 +118,7 @@ export class SessionStore {
       const same=s.controller.productId===controller.productId && (s.controller.serialNumber ? s.controller.serialNumber===controller.serialNumber : s.controller.path===controller.path);
       if(!same) throw Error('Different controller: start a new session.');
       const metrics=analyzePhase(phase,frames,expectedMs);
-      const capture={number:s.captures.length+1,at:new Date().toISOString(),phase,note,metrics};
+      const capture={number:s.captures.length+1,at:new Date().toISOString(),phase,note,metrics,calibrationEpoch:s.calibrationActions?.length||0};
       writeFileSync(join(this.dir(id),`capture-${capture.number}.json`),JSON.stringify({controller,...capture,frames}));
       s.captures.push(capture);this.save(s);this.log(s);
       const order=Object.keys(PHASES);const nextPhase=metrics.valid?order[order.indexOf(phase)+1]:phase;
@@ -127,11 +128,13 @@ export class SessionStore {
   report(id) {
     const s=this.get(id);const rests=s.captures.filter(c=>(c.phase==='rest'||c.phase==='verify')&&c.metrics.valid);
     const first=rests[0],last=rests.at(-1);const sameMode=first?.metrics.mode===last?.metrics.mode;
-    const latest=Object.fromEntries(Object.keys(PHASES).map(p=>[p,s.captures.filter(c=>c.phase===p).at(-1)]));
+    const epoch=s.calibrationActions?.length||0;
+    const latest=Object.fromEntries(Object.keys(PHASES).map(p=>[p,s.captures.filter(c=>c.phase===p&&(c.calibrationEpoch||0)===epoch).at(-1)]));
     const complete=Object.values(latest).every(c=>c?.metrics.valid) && Object.entries(latest).every(([p,c])=>p==='verify'||c.number<latest.verify.number) && new Set(Object.values(latest).map(c=>c?.metrics.mode)).size===1;
-    const finalRest=s.captures.filter(c=>c.phase==='rest'||c.phase==='verify').at(-1);
-    const deadzones=finalRest?.metrics.valid?{left:finalRest.metrics.left.deadzonePercent,right:finalRest.metrics.right.deadzonePercent}:null;
-    const report={...s,complete,logPath:join(this.dir(id),'summary.md'),recommendation:{radialDeadzonePercent:deadzones,applied:false,note:`Measured p99 rest radius + 1 percentage point. Candidate for game settings; verify in play. No controller calibration has been written.`,nextAction:!complete?'Repeat missing/invalid phases before deciding.':'Review measured center and circularity; game deadzones are separate settings. On-controller changes need verified before/after measurements.'},comparison:rests.length>1&&sameMode?{leftOffsetDeltaRaw:round(last.metrics.left.offsetRaw-first.metrics.left.offsetRaw),rightOffsetDeltaRaw:round(last.metrics.right.offsetRaw-first.metrics.right.offsetRaw),leftJitterDeltaRaw:round(last.metrics.left.jitterRaw-first.metrics.left.jitterRaw),rightJitterDeltaRaw:round(last.metrics.right.jitterRaw-first.metrics.right.jitterRaw),note:'Last valid rest minus first valid rest; negative is less measured offset/noise. No causal improvement claim.'}:null};
+    // Retain the same current-epoch quiet evidence as repeated-round comparison.
+    const comparison=compareSessionReports([{...s,complete}]);
+    const deadzones=comparison.comparable?{left:comparison.left.suggestedDeadzonePercent,right:comparison.right.suggestedDeadzonePercent}:null;
+    const report={...s,complete,logPath:join(this.dir(id),'summary.md'),recommendation:{radialDeadzonePercent:deadzones,applied:false,note:`Worst observed clean quiet peak + 1 percentage point, rounded up. Optional game-setting starting point, not a minimum; verify in play. This measurement workflow writes no controller calibration.`,nextAction:!complete?'Repeat missing/invalid phases before deciding.':'Review measured center and circularity; game deadzones are separate settings. On-controller changes need verified before/after measurements.'},comparison:rests.length>1&&sameMode?{leftOffsetDeltaRaw:round(last.metrics.left.offsetRaw-first.metrics.left.offsetRaw),rightOffsetDeltaRaw:round(last.metrics.right.offsetRaw-first.metrics.right.offsetRaw),leftJitterDeltaRaw:round(last.metrics.left.jitterRaw-first.metrics.left.jitterRaw),rightJitterDeltaRaw:round(last.metrics.right.jitterRaw-first.metrics.right.jitterRaw),note:'Last valid rest minus first valid rest; negative is less measured offset/noise. No causal improvement claim.'}:null};
     return {...report,tuning:assessStickTuning(report)};
   }
   log(s) {
