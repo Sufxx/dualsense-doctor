@@ -40,18 +40,31 @@ calibration tool; that protocol remains outside this feature's qualification.
 controller, transport and recorded calibration history. It rechecks phase quality
 and final-verification order. The repeated-round deadzone starting point is the
 worst valid quiet rest/button/verification peak plus one percentage point, rounded
-up. It is intentionally more conservative than the single-report p99 candidate.
+up. `session_report` uses the same rule for its complete current-epoch round, so a
+clean final p99 cannot erase earlier valid movement. Per-capture p99 remains a
+descriptive statistic; incomplete evidence withholds the report recommendation.
 Large or incompatible evidence withholds a recommendation. Circularity and release
 overshoot are reported separately. Repeated checks establish observed consistency;
 they do not train a policy, tune firmware, or guarantee zero future drift. Begin a
 new comparison after external calibration/input changes that the tool cannot detect.
 
-Rest reports include offset, jitter and radial displacement. Deadzone candidates
-are observed p99 radial displacement plus a margin; they remain unapplied.
+Rest reports include offset, jitter, p99 and peak radial displacement. A per-capture
+candidate describes that capture only; the complete-report recommendation retains
+all valid quiet peaks. These are unapplied starting points, not minimum game settings.
 Range reports distinguish axis limits, sector coverage and RMS circularity.
 The circularity implementation follows the MIT DualShock Tools normalization,
 48-bin angular maxima, and RMS radial error calculation. Its 7–9% guidance aims
 to resemble stock behavior; symmetry matters more than a precise target.
+
+Each coached circle must contain a continuous full turn. Rim exits, input gaps and
+large unobservable angular jumps discard only unfinished arcs; completed turns remain.
+An observed pause on the rim can resume, and reverse motion removes unfinished
+forward credit. Pace is checked over each completed lap; short-window cues do not
+erase a circle for one faster quadrant. Release direction is latched from the first outward excursion until
+a sampled center return, so a rebound cannot relabel the original flick.
+
+See [measurement math and limits](MEASUREMENT-MATH.md) for normalization, rounding,
+quantization examples, geometry validation and what release peaks cannot establish.
 
 Primary references: https://dualshock-tools.github.io/ and its controller-manager.js,
 core.js and stick-renderer.js sources. The existing Sony HID protocol credits in
@@ -68,7 +81,6 @@ The repository also includes the generic
 [dualsense-tuneup skill](../.agents/skills/dualsense-tuneup/SKILL.md). Agents that
 discover project skills can use it directly; others can copy it into their normal
 skill directory. It contains no machine paths, owner profile, or thread arrangement.
-
 
 ## Directional tuning evidence
 

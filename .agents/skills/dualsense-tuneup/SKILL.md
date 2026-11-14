@@ -78,3 +78,11 @@ check whether it repeats after releases before proposing a separate supported
 adjustment. Fixed `nextStep` guidance never authorizes firmware writes. Raw endpoints
 can saturate, and circle extrema do not prove straight-direction holds or ideal
 range. Refer to `mcp/COACHING.md` for the distinct normalizations and evidence limits.
+
+Use the same conservative complete-round recommendation in session reports and repeated-round
+comparisons; a clean final p99 must not erase earlier valid quiet peaks. Explain
+one-count quantization separately from game settings, and do not infer all samples
+were centered from a rounded mean or p99 of zero. Circle evidence requires complete
+continuous turns; disconnected arcs do not count. Release direction refers to the
+first outward excursion, while post-return peaks cover only the sampled 300 ms after
+return. They do not establish mechanical snapback. See mcp/MEASUREMENT-MATH.md.
