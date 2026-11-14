@@ -35,21 +35,25 @@ function guessTransport(d) {
 }
 
 // ---------------- input parsing ----------------
-function parseSticks(buf) {
-  if (!buf || buf.length < 5) return null;
+export function parseSticks(buf) {
+  if (!buf || buf.length < 10) return null;
   const id = buf[0];
   if (id === 0x31 && buf.length >= 8) {
-    return { lx: buf[2], ly: buf[3], rx: buf[4], ry: buf[5], l2: buf[6], r2: buf[7], mode: 'bt' };
+    if (buf.length < 78) return null;
+    return { lx: buf[2], ly: buf[3], rx: buf[4], ry: buf[5], l2: buf[6], r2: buf[7], buttons: buttonMask(buf, 9), mode: 'bt' };
   }
   if (id === 0x01) {
-    const mode = buf.length >= 40 ? 'usb' : 'bt-compat';
+    const mode = buf.length === 64 ? 'usb' : [10,78].includes(buf.length) ? 'bt-compat' : null;
+    if (!mode) return null;
     return {
       lx: buf[1], ly: buf[2], rx: buf[3], ry: buf[4],
-      l2: buf.length > 6 ? buf[5] : 0, r2: buf.length > 6 ? buf[6] : 0, mode,
+      l2: buf[mode === 'usb' ? 5 : 8], r2: buf[mode === 'usb' ? 6 : 9],
+      buttons: buttonMask(buf, mode === 'usb' ? 8 : 5), mode,
     };
   }
   return null;
 }
+function buttonMask(buf, i) { return (buf[i] >> 4) | (buf[i + 1] << 4) | ((buf[i + 2] & 7) << 12); }
 
 // ---------------- effect builders (clamped) ----------------
 export function effOff() { return [0x05, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]; }
@@ -86,8 +90,8 @@ function buildCommon({ rEff = null, lEff = null, led = null } = {}) {
   let f0 = 0, f1 = 0, f2 = 0;
   if (rEff) { for (let i = 0; i < 11; i++) c[10 + i] = rEff[i] & 0xff; f0 |= 0x04; }
   if (lEff) { for (let i = 0; i < 11; i++) c[21 + i] = lEff[i] & 0xff; f0 |= 0x08; }
-  if (led) { f1 |= 0x04; f2 |= 0x02; c[44] = clamp(led[0] | 0, 0, 255); c[45] = clamp(led[1] | 0, 0, 255); c[46] = clamp(led[2] | 0, 0, 255); }
-  c[0] = f0; c[1] = f1; c[39] = f2;
+  if (led) { f1 |= 0x04; c[44] = clamp(led[0] | 0, 0, 255); c[45] = clamp(led[1] | 0, 0, 255); c[46] = clamp(led[2] | 0, 0, 255); }
+  c[0] = f0; c[1] = f1; c[38] = f2;
   return c;
 }
 
@@ -129,7 +133,7 @@ export function diagnoseFromFrames(frames, { mode, seconds } = {}) {
 
 // ---------------- managed controller handle ----------------
 export class Controller {
-  constructor(info) { this.info = typeof info === 'string' ? { path: info } : info; this.dev = null; this._mode = null; }
+  constructor(info) { this.info = typeof info === 'string' ? { path: info } : (info || {}); this.dev = null; this._mode = null; }
   get mode() { return this._mode; }
   get isEdge() { return this.info.productId === EDGE_PID; }
 
@@ -139,11 +143,15 @@ export class Controller {
       const found = listControllers()[0];
       if (!found) throw new Error('No DualSense found. Connect it via USB (Bluetooth is not reachable on macOS).');
       this.info = found;
+    } else {
+      const found = listControllers().find(d => d.path === this.info.path);
+      if (!found) throw new Error('Selected controller is no longer connected. List controllers again.');
+      this.info = found;
     }
     try { this.dev = new HID.HID(this.info.path); }
     catch (e) { throw new Error(`Could not open controller: ${e.message}. On Linux add a hidraw udev rule; on macOS grant Input Monitoring.`); }
   }
-  close() { try { this.dev?.close(); } catch {} this.dev = null; }
+  close() { try { this.dev?.close(); } catch {} this.dev = null;this._lightbarReady=false;this._mode=null; }
 
   _readOnce(timeoutMs = 400) {
     const buf = this.dev.readTimeout(timeoutMs);
@@ -169,10 +177,10 @@ export class Controller {
 
   sampleSticks(ms = 2000) {
     this.open();
-    const frames = []; let misses = 0; const t0 = Date.now();
-    while (Date.now() - t0 < ms) {
+    const frames = []; let misses = 0; const t0 = performance.now();
+    while (performance.now() - t0 < ms) {
       const r = this._readOnce(60);
-      if (r?.s) frames.push({ t: Date.now() - t0, ...r.s });
+      if (r?.s) frames.push({ t: performance.now() - t0, ...r.s });
       else misses++;
     }
     return { frames, mode: this._mode, n: frames.length, misses };
@@ -186,7 +194,7 @@ export class Controller {
       if (!r) continue;
       const { buf, s } = r;
       if (!s) continue;
-      let idx = s.mode === 'bt' ? 53 : s.mode === 'usb' ? 54 : -1;
+      let idx = s.mode === 'bt' ? 54 : s.mode === 'usb' ? 53 : -1;
       if (idx < 0 || buf.length <= idx) return { level: null, status: null, mode: s.mode, reason: 'battery byte not present in this report' };
       const b = buf[idx];
       const level = Math.min(100, (b & 0x0f) * 10);
@@ -210,14 +218,21 @@ export class Controller {
   _sendOutput(common) {
     this.open();
     if (this._mode == null) this.readSticksOnce(600); // detect mode
-    if (this._mode === 'usb') { this.dev.write([0x02, ...common]); return; }
-    // Bluetooth: 0x31, tag 0x02, common, CRC32 over [0xA2,0x31,0x02,...common]
-    const crcInput = [0xa2, 0x31, 0x02, ...common];
-    const crc = crc32(crcInput);
-    this.dev.write([0x31, 0x02, ...common, crc & 0xff, (crc >> 8) & 0xff, (crc >> 16) & 0xff, (crc >> 24) & 0xff]);
+    if (this._mode === 'usb') { this.dev.write([0x02, ...common, ...new Array(15).fill(0)]); return; }
+    if (this._mode !== 'bt' && this._mode !== 'bt-compat') throw new Error('No input transport detected; output refused.');
+    // Sony/SDL framing: ID, sequence tag, tag, common block, reserved, CRC.
+    this._seq = ((this._seq ?? -1) + 1) & 15;
+    const packet = [0x31, this._seq << 4, 0x10, ...common, ...new Array(24).fill(0)];
+    const crc = crc32([0xa2, ...packet]);
+    this.dev.write([...packet, crc & 0xff, (crc >>> 8) & 0xff, (crc >>> 16) & 0xff, (crc >>> 24) & 0xff]);
   }
   applyTriggers(lEff, rEff) { this._sendOutput(buildCommon({ lEff, rEff })); }
-  applyLightbar(r, g, b) { this._sendOutput(buildCommon({ led: [clamp(r | 0, 0, 255), clamp(g | 0, 0, 255), clamp(b | 0, 0, 255)] })); }
+  applyLightbar(r, g, b) {
+    // Sony initialization uses common bytes 38 (flag) and 41 (fade-out setup),
+    // followed by a separate color report. Byte 39 is reserved.
+    if(!this._lightbarReady){const setup=new Array(47).fill(0);setup[38]=2;setup[41]=2;this._sendOutput(setup);this._lightbarReady=true;}
+    this._sendOutput(buildCommon({ led: [clamp(r | 0, 0, 255), clamp(g | 0, 0, 255), clamp(b | 0, 0, 255)] }));
+  }
 
   // ---- GATED calibration (NVS write — brick risk). Only invoked by the gated tool. ----
   calibrationPreflight() {
@@ -237,7 +252,7 @@ export class Controller {
     this.open();
     let last = null, stableSince = null; const t0 = Date.now();
     while (Date.now() - t0 < timeout) {
-      const r = this._readOnce(60); if (!r?.s) continue;
+      const r = this._readOnce(60); if (!r?.s) { stableSince = null; last = null; continue; }
       const { lx, ly, rx, ry } = r.s;
       const near = Math.hypot(lx - 128, ly - 128) < restTol && Math.hypot(rx - 128, ry - 128) < restTol;
       const vel = last ? Math.max(Math.abs(lx - last[0]), Math.abs(ly - last[1]), Math.abs(rx - last[2]), Math.abs(ry - last[3])) : 999;
