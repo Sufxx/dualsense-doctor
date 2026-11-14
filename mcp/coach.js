@@ -4,13 +4,33 @@
 const PHASES=new Set(['rest','range','release','buttons','verify']);
 const AXES={left:['lx','ly'],right:['rx','ry']};
 const TAU=2*Math.PI;
+// Two rounded byte-coordinate endpoints can each differ by half a count per
+// axis. Apply this uncertainty once per aggregate, not once per report.
+const RIM_ANGLE_UNCERTAINTY=2*Math.asin(Math.SQRT1_2/(127*.85));
+const PACE_WINDOW_MS=100;
+// No fresh interval may bridge more than the existing 250 ms / 3 rad/s
+// envelope. This detects undersampled jumps without inferring physical speed
+// from report-arrival intervals, which can be delivered in submillisecond bursts.
+const MAX_OBSERVABLE_ANGLE=3*.25+RIM_ANGLE_UNCERTAINTY;
 const clamp=v=>Math.max(0,Math.min(1,v));
 const round=v=>Math.round(v*100)/100;
 const point=(frame,[x,y])=>({x:(frame[x]-128)/127,y:(frame[y]-128)/127});
 const radius=p=>Math.hypot(p.x,p.y);
 const wrap=a=>Math.atan2(Math.sin(a),Math.cos(a));
 const cue=(cueCode,cueMessage,cueTone='neutral',pace='')=>({cueCode,cueMessage,cueTone,pace});
-const sideState=()=>({history:[],angle:null,lastAt:null,netAngle:0,sectors:new Set(),velocity:0,
+const rangeTurns=s=>s.completedTurns+s.partialAngle/TAU;
+const rangeSectors=s=>new Set([...s.sectors,...s.partialSectors]).size;
+const rangeBucket=()=>({ms:0,angle:0,travel:0});
+const resetLap=s=>{
+  s.partialAngle=0;s.partialSectors.clear();
+  s.lapStartedAt=null;s.lapTravel=0;s.lapPausedMs=0;s.lapStillSince=null;
+};
+const resetRangeSegment=s=>{
+  resetLap(s);
+  s.angle=null;s.lastAt=null;s.bucket=rangeBucket();s.velocity=0;s.speed=0;
+};
+const sideState=()=>({bucket:rangeBucket(),angle:null,lastAt:null,completedTurns:0,partialAngle:0,sectors:new Set(),partialSectors:new Set(),velocity:0,
+  lapStartedAt:null,lapTravel:0,lapPausedMs:0,lapStillSince:null,
   speed:0,radius:0,releases:0,releaseDirections:new Set(),unsettledReleases:0,lastReturn:null,cooldownUntil:0,ready:true,armed:null,pending:null,postReturnPeak:0,fastFlicks:0,contaminated:false,cue:cue('waiting_input','Waiting for fresh stick input.')});
 
 export class StickCoach {
@@ -45,6 +65,10 @@ export class StickCoach {
     const valid=Number.isFinite(now)&&Object.values(AXES).flat().every(a=>Number.isInteger(frame?.[a])&&frame[a]>=0&&frame[a]<=255);
     if(!valid) {
       this.inputInvalid=true;this.latest=null;this.stableSince=null;
+      if(this.phase==='range') {
+        for(const s of Object.values(this.sides))resetRangeSegment(s);
+        this.progress=0;
+      }
       this.warning='Invalid stick input. Waiting for fresh controller reports.';return this.state();
     }
     if(this.lastAt!==null&&now<=this.lastAt)throw Error('Coaching clock must increase between reports');
@@ -53,7 +77,7 @@ export class StickCoach {
     if(this.complete&&!this.continuous) {this.lastAt=now;return this.state();}
     if(gap) {
       this.stableSince=null;this.window=[];
-      for(const s of Object.values(this.sides)){s.angle=null;s.lastAt=null;s.history=[];s.velocity=0;s.speed=0;s.armed=null;s.pending=null;}
+      for(const s of Object.values(this.sides)){resetRangeSegment(s);s.armed=null;s.pending=null;}
     }
     this.warning=null;
     const elapsed=now-this.startedAt;
@@ -74,42 +98,84 @@ export class StickCoach {
     for(const [side,axes] of Object.entries(AXES)) {
       const s=this.sides[side],p=point(frame,axes),r=radius(p),a=Math.atan2(p.y,p.x);
       s.radius=r;
-      s.cue=cue('keep_going',`Trace the full outer edge ${this.direction}.`,'neutral','Start turning');
+      if(s.angle===null)s.cue=cue('keep_going',`Trace the full outer edge ${this.direction}.`,'neutral','Start turning');
       if(r<.85) {
-        s.angle=null;s.lastAt=null;s.history=[];s.velocity=0;s.speed=0;
+        resetRangeSegment(s);
         s.cue=cue('reach_rim',`Push to the outer edge, then turn ${this.direction}.`,'warning','Reach the edge');
         warnings.push(`${side}: reach the outer rim.`);continue;
       }
       if(s.angle!==null) {
         const dt=now-s.lastAt,delta=wrap(a-s.angle);
-        s.history.push({at:now,delta,dt});s.history=s.history.filter(v=>v.at>=now-1000);
-        const seconds=s.history.reduce((sum,v)=>sum+v.dt,0)/1000;
-        s.velocity=seconds?s.history.reduce((sum,v)=>sum+v.delta,0)/seconds:0;
-        const speed=seconds?s.history.reduce((sum,v)=>sum+Math.abs(v.delta),0)/seconds:0;
-        s.speed=speed;
-        // Count net travel, so back-and-forth arcs cannot manufacture circles.
-        // Both endpoints must be on the rim, the interval fresh, and motion at
-        // an observable pace. A wrong-way move subtracts earned net travel.
-        if(dt<=250&&speed<=3&&Math.abs(s.velocity)>=.35) {
-          s.netAngle=Math.max(0,s.netAngle+direction*delta);
-          if(direction*delta>0)s.sectors.add((Math.floor((a+Math.PI)/TAU*16)+16)%16);
+        if(Math.abs(delta)>MAX_OBSERVABLE_ANGLE) {
+          resetRangeSegment(s);
+          s.cue=cue('unobservable_motion','Motion skipped too much of the rim to follow. Start this circle again with smooth, slower movement.','warning','Motion not observed');
+        } else {
+          const bucket=s.bucket;
+          bucket.ms+=dt;bucket.angle+=delta;bucket.travel+=Math.abs(delta);
+          // Arrival times do not describe individual sensor intervals. Keep the
+          // pace cue on a measurable aggregate. A faster quadrant can prompt a
+          // warning, but does not erase an otherwise observable partial circle.
+          if(bucket.ms>=PACE_WINDOW_MS) {
+            const seconds=bucket.ms/1000;
+            const velocity=bucket.angle/seconds;
+            const speed=Math.max(0,bucket.travel-RIM_ANGLE_UNCERTAINTY)/seconds;
+            if(speed>3)s.cue=cue('too_fast','Slow down. Aim for one full turn every 3–6 seconds.','warning','Too fast');
+            else if(direction*velocity<-.2)s.cue=cue('wrong_direction',`Change direction: turn ${this.direction} along the full outer edge.`,'warning','Wrong direction');
+            else if(elapsed>1000&&Math.abs(velocity)<.35)s.cue=cue('too_slow','Turn a little faster and keep moving around the full outer edge.','warning','Too slow');
+            else if(Math.abs(velocity)<.35)s.cue=cue('keep_going',`Start turning ${this.direction} along the full outer edge.`,'neutral','Start turning');
+            else if(s.completedTurns>=2&&rangeSectors(s)>=14)s.cue=cue('complete','Coverage captured. Keep a gentle circle while the other stick finishes.','good','Coverage captured');
+            else s.cue=cue('keep_going',`Good pace. Keep tracing the full outer edge ${this.direction}.`,'good','Good pace');
+            s.bucket=rangeBucket();
+            s.velocity=velocity;s.speed=speed;
+          }
+
+          const signedDelta=direction*delta;
+          if(delta===0&&s.lapStartedAt!==null&&s.lapStillSince===null)s.lapStillSince=s.lastAt;
+          if(delta!==0) {
+            if(s.lapStillSince!==null) {
+              // Exclude only fully observed constant-angle holds of at least
+              // 250 ms. Shorter/quantized pauses stay in the observed lap mean;
+              // this is not a claim to recover physical moving-only timing.
+              const held=s.lastAt-s.lapStillSince;
+              if(held>=250)s.lapPausedMs+=held;
+              s.lapStillSince=null;
+            }
+            if(signedDelta>0&&s.lapStartedAt===null)s.lapStartedAt=s.lastAt;
+            if(s.lapStartedAt!==null)s.lapTravel+=Math.abs(delta);
+            // Geometry remains signed, including slow reverse motion. Complete
+            // laps qualify by their own mean pace, never by preceding idle or a
+            // previous lap's time. A pause keeps the partial geometry intact.
+            s.partialAngle=Math.max(0,s.partialAngle+signedDelta);
+            if(s.partialAngle===0)resetLap(s);
+            else if(signedDelta>0)s.partialSectors.add((Math.floor((a+Math.PI)/TAU*16)+16)%16);
+            if(s.partialAngle>=TAU-1e-10) {
+              const lapMs=now-s.lapStartedAt-s.lapPausedMs;
+              const lapSpeed=lapMs>=PACE_WINDOW_MS?Math.max(0,s.lapTravel-RIM_ANGLE_UNCERTAINTY)/(lapMs/1000):null;
+              if(lapMs<PACE_WINDOW_MS) {
+                s.cue=cue('unobservable_motion','The turn arrived without enough elapsed timing evidence. Start another smooth circle.','warning','Timing unavailable');
+                s.velocity=0;s.speed=0;
+              } else if(lapSpeed>3)s.cue=cue('too_fast','Slow down. That turn was too fast to count; start another smooth circle.','warning','Too fast');
+              else if(TAU/(lapMs/1000)<.35)s.cue=cue('too_slow','That turn was too slow to count. Keep moving around the full outer edge.','warning','Too slow');
+              else {
+                s.completedTurns++;
+                for(const sector of s.partialSectors)s.sectors.add(sector);
+              }
+              // Discard crossing overshoot rather than invent a sensor-time
+              // interpolation or carry any preceding lap time into the next.
+              resetLap(s);
+            }
+          }
         }
-        if(speed>3)s.cue=cue('too_fast','Slow down. Aim for one full turn every 3–6 seconds.','warning','Too fast');
-        else if(direction*s.velocity<-.2)s.cue=cue('wrong_direction',`Change direction: turn ${this.direction} along the full outer edge.`,'warning','Wrong direction');
-        else if(elapsed>1000&&Math.abs(s.velocity)<.35)s.cue=cue('too_slow','Turn a little faster and keep moving around the full outer edge.','warning','Too slow');
-        else if(Math.abs(s.velocity)<.35)s.cue=cue('keep_going',`Start turning ${this.direction} along the full outer edge.`,'neutral','Start turning');
-        else if(s.netAngle>=2*TAU&&s.sectors.size>=14)s.cue=cue('complete','Coverage captured. Keep a gentle circle while the other stick finishes.','good','Coverage captured');
-        else s.cue=cue('keep_going',`Good pace. Keep tracing the full outer edge ${this.direction}.`,'good','Good pace');
         if(s.cue.cueTone==='warning')warnings.push(`${side}: ${s.cue.cueMessage}`);
       }
       s.angle=a;s.lastAt=now;
     }
-    const progress=Object.values(this.sides).map(s=>Math.min(clamp(s.netAngle/(2*TAU)),clamp(s.sectors.size/14)));
+    const progress=Object.values(this.sides).map(s=>Math.min(clamp(rangeTurns(s)/2),clamp(rangeSectors(s)/14)));
     this.progress=Math.min(...progress,clamp(elapsed/6000));
-    this.complete=elapsed>=6000&&Object.values(this.sides).every(s=>s.netAngle>=2*TAU&&s.sectors.size>=14);
+    this.complete=elapsed>=6000&&Object.values(this.sides).every(s=>s.completedTurns>=2&&rangeSectors(s)>=14);
     this.secondsRemaining=null;this.warning=warnings.length?warnings.join(' '):null;
     if(!warnings.length&&!this.complete) {
-      const missing=Object.entries(this.sides).filter(([,s])=>s.netAngle>=2*TAU&&s.sectors.size<14);
+      const missing=Object.entries(this.sides).filter(([,s])=>s.completedTurns>=2&&rangeSectors(s)<14);
       if(missing.length)this.warning=`${missing[0][0]}: cover the missing directions around the rim.`;
     }
   }
@@ -157,8 +223,10 @@ export class StickCoach {
         if(r>=.35&&!s.pending.unsettled){s.unsettledReleases++;s.pending.unsettled=true;}
       }
       if(now>=s.cooldownUntil&&r<.15)s.ready=true;
-      if(s.ready&&now>=s.cooldownUntil&&r>.75) {
-        if(!s.armed&&s.lastReturn!==null&&now-s.lastReturn<500)s.fastFlicks++;
+      if(s.ready&&!s.armed&&now>=s.cooldownUntil&&r>.75) {
+        if(s.lastReturn!==null&&now-s.lastReturn<500)s.fastFlicks++;
+        // Keep the first observed outward direction until a sampled return.
+        // An opposite-side rebound alone does not prove a center crossing.
         s.armed={x:p.x,y:p.y};
       }
       if(s.armed&&r<.15) {
@@ -189,7 +257,7 @@ export class StickCoach {
     const details={elapsedMs:elapsed,timedOut:elapsed>=30000&&!this.complete,inputFresh:this.lastAt!==null&&!stale&&!this.inputInvalid};
     if(this.phase==='range') {
       details.direction=this.direction;details.coachingDefaults={minRimRadius:.85,minRadiansPerSecond:.35,maxRadiansPerSecond:3,targetSecondsPerTurn:[3,6],targetTurns:2,minSectors:14};
-      for(const [side,s] of Object.entries(this.sides))details[side]={radius:round(s.radius),angularVelocity:round(s.velocity),speedRadPerSec:round(s.speed),turns:round(s.netAngle/TAU),coveredSectors:s.sectors.size};
+      for(const [side,s] of Object.entries(this.sides))details[side]={radius:round(s.radius),angularVelocity:round(s.velocity),speedRadPerSec:round(s.speed),turns:round(rangeTurns(s)),coveredSectors:rangeSectors(s)};
     } else if(this.phase==='release') {
       details.evidenceOnly=true;
       for(const [side,s] of Object.entries(this.sides))details[side]={releases:s.releases,directions:[...s.releaseDirections],unsettledReleases:s.unsettledReleases,postReturnPeakPercent:round(s.postReturnPeak*100),fastFlicks:s.fastFlicks};
