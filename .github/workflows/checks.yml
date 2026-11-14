@@ -1,0 +1,55 @@
+name: Hardware-free checks
+
+on:
+  push:
+    branches: [main, 'contrib/**', 'upstream/**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: checks-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  mcp:
+    name: MCP / ${{ matrix.os }} / Node ${{ matrix.node }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        node: ['20', '24']
+    defaults:
+      run:
+        shell: bash
+        working-directory: mcp
+    env:
+      DUALSENSE_MCP_ALLOW_CALIBRATION: '0'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+          cache-dependency-path: mcp/package-lock.json
+      - run: npm ci
+      - name: Synthetic regression suite
+        run: node --test --test-concurrency=1 --test-timeout=30000 test/*.test.js
+      - name: MCP handshake without controller access
+        if: hashFiles('mcp/test/smoke-readonly.js') != ''
+        run: node test/smoke-readonly.js
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        if: matrix.node == '24' && hashFiles('test/test_serve.py') != ''
+        with:
+          python-version: '3.12'
+      - name: Public-asset boundary tests
+        if: matrix.node == '24' && hashFiles('test/test_serve.py') != ''
+        working-directory: .
+        run: python -B -m unittest discover -s test -p test_serve.py -v
